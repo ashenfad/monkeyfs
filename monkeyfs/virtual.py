@@ -16,8 +16,6 @@ from datetime import datetime, timezone
 
 from collections.abc import MutableMapping
 
-from .context import _defer_commits
-
 from .base import FileInfo, FileMetadata
 
 
@@ -563,15 +561,8 @@ class VirtualFS:
         self._dir_cache = None
         self._current_size = None  # Will be recomputed on next access
 
-        # Snapshot if not deferred and state supports it
-        if not _defer_commits.get() and hasattr(self._state, "commit"):
-            self._state.commit()
-
     def write_many(self, files: dict[str, bytes]) -> None:
         """Write multiple files atomically.
-
-        Creates a single snapshot (if using Versioned state) after writing
-        all files, providing cleaner version history and better atomicity.
 
         Args:
             files: Mapping of file path to content (bytes).
@@ -620,10 +611,6 @@ class VirtualFS:
         # Invalidate caches
         self._dir_cache = None
         self._current_size = None  # Will be recomputed on next access
-
-        # Create single snapshot if using versioned state
-        if hasattr(self._state, "commit"):
-            self._state.commit()
 
     def list(self, path: str = ".", recursive: bool = False) -> list[str]:
         """List directory contents.
@@ -844,10 +831,6 @@ class VirtualFS:
         self._dir_cache = None
         self._current_size = None  # Will be recomputed on next access
 
-        # Snapshot if not deferred and state supports it
-        if not _defer_commits.get() and hasattr(self._state, "commit"):
-            self._state.commit()
-
     def remove_many(self, paths: list[str]) -> None:
         """Remove multiple files atomically.
 
@@ -882,10 +865,6 @@ class VirtualFS:
         # Invalidate caches
         self._dir_cache = None
         self._current_size = None  # Will be recomputed on next access
-
-        # Create single snapshot if using versioned state
-        if hasattr(self._state, "commit"):
-            self._state.commit()
 
     def mkdir(self, path: str, exist_ok: bool = True, parents: bool = False) -> None:
         """Create a directory.
@@ -1011,24 +990,20 @@ class VirtualFS:
             metadata = self._get_metadata()
             src_meta = metadata.get(src_norm)
 
-            token = _defer_commits.set(True)
-            try:
-                self.write(dst, content)
+            self.write(dst, content)
 
-                # Preserve created_at from source
-                metadata = self._get_metadata()
-                if src_meta:
-                    dst_meta = metadata[dst_norm]
-                    metadata[dst_norm] = FileMetadata(
-                        size=dst_meta.size,
-                        created_at=src_meta.created_at,
-                        modified_at=dst_meta.modified_at,
-                    )
-                    self._set_metadata(metadata)
+            # Preserve created_at from source
+            metadata = self._get_metadata()
+            if src_meta:
+                dst_meta = metadata[dst_norm]
+                metadata[dst_norm] = FileMetadata(
+                    size=dst_meta.size,
+                    created_at=src_meta.created_at,
+                    modified_at=dst_meta.modified_at,
+                )
+                self._set_metadata(metadata)
 
-                self.remove(src)
-            finally:
-                _defer_commits.reset(token)
+            self.remove(src)
 
         elif self.isdir(src):
             # Directory rename — move all children
@@ -1046,40 +1021,33 @@ class VirtualFS:
                 if file_path == src_norm or file_path.startswith(src_prefix):
                     files_to_move.append((key, file_path))
 
-            token = _defer_commits.set(True)
-            try:
-                metadata = self._get_metadata()
-                for key, file_path in files_to_move:
-                    # Compute new path
-                    rel = file_path[len(src_norm):]
-                    new_path = dst_norm + rel
-                    new_key = self._encode_path("/" + new_path)
+            metadata = self._get_metadata()
+            for key, file_path in files_to_move:
+                # Compute new path
+                rel = file_path[len(src_norm):]
+                new_path = dst_norm + rel
+                new_key = self._encode_path("/" + new_path)
 
-                    # Move content
-                    self._state[new_key] = self._state.pop(key)
+                # Move content
+                self._state[new_key] = self._state.pop(key)
 
-                    # Move metadata
-                    if file_path in metadata:
-                        metadata[new_path] = metadata.pop(file_path)
+                # Move metadata
+                if file_path in metadata:
+                    metadata[new_path] = metadata.pop(file_path)
 
-                # Move directory metadata entries
-                dir_keys_to_move = [
-                    k for k in metadata
-                    if k == src_norm or k.startswith(src_prefix)
-                ]
-                for k in dir_keys_to_move:
-                    rel = k[len(src_norm):]
-                    metadata[dst_norm + rel] = metadata.pop(k)
+            # Move directory metadata entries
+            dir_keys_to_move = [
+                k for k in metadata
+                if k == src_norm or k.startswith(src_prefix)
+            ]
+            for k in dir_keys_to_move:
+                rel = k[len(src_norm):]
+                metadata[dst_norm + rel] = metadata.pop(k)
 
-                self._set_metadata(metadata)
-                self._dir_cache = None
-            finally:
-                _defer_commits.reset(token)
+            self._set_metadata(metadata)
+            self._dir_cache = None
         else:
             raise FileNotFoundError(src)
-
-        if not _defer_commits.get() and hasattr(self._state, "commit"):
-            self._state.commit()
 
     def replace(self, src: str, dst: str) -> None:
         """Replace dst with src (alias for rename)."""

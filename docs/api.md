@@ -1,6 +1,6 @@
 # API Reference
 
-- [Context managers](#context-managers) -- `patch`, `suspend`, `defer_commits`
+- [Context managers](#context-managers) -- `patch`, `suspend`
 - [Filesystem implementations](#filesystem-implementations) -- `VirtualFS`, `IsolatedFS`, `VirtualFile`
 - [Protocol & types](#protocol--types) -- `FileSystem`, `FileMetadata`, `FileInfo`
 - [Configuration](#configuration) -- `connect_fs`, config dataclasses
@@ -40,27 +40,6 @@ with patch(vfs):
 ```
 
 Useful for privileged functions that need host filesystem access while patching is active.
-
-### `defer_commits()`
-
-Suppress per-mutation commits to the VirtualFS backing store:
-
-```python
-from monkeyfs import VirtualFS, defer_commits, patch
-
-store = MyPersistentMapping()  # any MutableMapping with a commit() method
-vfs = VirtualFS(store)
-
-with defer_commits():
-    with patch(vfs):
-        for i in range(1000):
-            with open(f"file_{i}.txt", "w") as f:
-                f.write(str(i))
-
-store.commit()  # persist all writes at once
-```
-
-VirtualFS accepts any `MutableMapping[str, bytes]` as its state. If the mapping also has a `commit()` method (e.g. gitkv, shelve), VirtualFS calls it after each mutation so changes are persisted immediately. `defer_commits()` suppresses those calls, letting you batch writes and commit once at the end. This avoids expensive per-write persistence during bulk operations.
 
 ## Filesystem implementations
 
