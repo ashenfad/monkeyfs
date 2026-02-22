@@ -348,3 +348,50 @@ class TestAutoCreateParentDirs:
 
         assert vfs.isdir("/workdir/sub") is True
         assert vfs.isfile("/workdir/sub/file.txt") is True
+
+
+class TestImplicitDirectories:
+    """Test that VirtualFS handles implicit directories correctly."""
+
+    def test_implicit_directory_behavior(self):
+        """Writing nested files creates implicit parent directories."""
+        vfs = VirtualFS({})
+
+        vfs.write("a/b/c.py", b"print('hello')")
+
+        # Parents exist implicitly
+        assert vfs.exists("a/b/c.py")
+        assert vfs.exists("a/b")
+        assert vfs.exists("a")
+        assert vfs.exists(".")
+        assert vfs.exists("/")
+
+        # Type checks
+        assert vfs.isdir("a")
+        assert vfs.isdir("a/b")
+        assert not vfs.isdir("a/b/c.py")
+        assert vfs.isfile("a/b/c.py")
+        assert not vfs.isfile("a/b")
+        assert not vfs.isfile("a")
+
+        # Listing
+        assert vfs.list("/") == ["a"]
+        assert vfs.list("a") == ["b"]
+        assert vfs.list("a/b") == ["c.py"]
+
+        # Normalization
+        assert vfs.exists("./a/b/c.py")
+        assert vfs.exists("/a/b/c.py")
+
+    def test_list_multiple_items(self):
+        """Listing works with multiple items in same directory."""
+        vfs = VirtualFS({})
+
+        vfs.write("pkg/__init__.py", b"")
+        vfs.write("pkg/utils.py", b"")
+        vfs.write("pkg/sub/mod.py", b"")
+        vfs.write("top.py", b"")
+
+        assert vfs.list("/") == ["pkg", "top.py"]
+        assert vfs.list("pkg") == ["__init__.py", "sub", "utils.py"]
+        assert vfs.list("pkg/sub") == ["mod.py"]
