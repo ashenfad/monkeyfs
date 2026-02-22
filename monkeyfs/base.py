@@ -65,10 +65,8 @@ class FileMetadata:
 
         try:
             return datetime.fromisoformat(iso_str).timestamp()
-        except Exception:
-            import time
-
-            return time.time()
+        except ValueError:
+            return 0.0
 
     @property
     def st_atime(self) -> float:

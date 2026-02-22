@@ -272,7 +272,7 @@ class VirtualFS:
                     dir_path = "/".join(parts[:i])
                     self._dir_cache.add(dir_path)
                     self._dir_cache.add(dir_path + "/")
-            except Exception:
+            except (KeyError, ValueError, UnicodeDecodeError):
                 continue
 
         return self._dir_cache
