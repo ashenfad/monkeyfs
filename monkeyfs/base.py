@@ -130,7 +130,7 @@ class FileSystem(Protocol):
         """Check if path is a directory."""
         ...
 
-    def list(self, path: str = ".") -> list[str]:
+    def list(self, path: str = ".", recursive: bool = False) -> list[str]:
         """List directory contents (filenames only)."""
         ...
 
