@@ -857,39 +857,16 @@ class VirtualFS:
         self._current_size = None  # Will be recomputed on next access
 
     def remove_many(self, paths: list[str]) -> None:
-        """Remove multiple files atomically.
-
-        Creates a single snapshot (if using Versioned state) after removing
-        all files, providing cleaner version history.
+        """Remove multiple files.
 
         Args:
             paths: List of file paths to remove.
 
         Raises:
-            FileNotFoundError: If any file doesn't exist.
-
-        Example:
-            >>> vfs.remove_many(["temp/file1.txt", "temp/file2.txt"])
+            FileNotFoundError: If a file doesn't exist.
         """
-        # Validate all exist first
-        missing = [p for p in paths if not self.exists(p)]
-        if missing:
-            raise FileNotFoundError(
-                f"File{'s' if len(missing) > 1 else ''} not found: {', '.join(missing)}"
-            )
-
-        # Remove all files and metadata
-        metadata = self._get_metadata()
-        paths = [self._normalize_path(p) for p in paths]
         for path in paths:
-            key = self._encode_path(path)
-            del self._state[key]
-            metadata.pop(path, None)
-        self._set_metadata(metadata)
-
-        # Invalidate caches
-        self._dir_cache = None
-        self._current_size = None  # Will be recomputed on next access
+            self.remove(path)
 
     def mkdir(self, path: str, parents: bool = False, exist_ok: bool = False) -> None:
         """Create a directory.
