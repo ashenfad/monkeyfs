@@ -219,6 +219,43 @@ class MemoryFS:
             raise FileNotFoundError(_errno.ENOENT, "No such directory", path)
         self._cwd = path
 
+    def replace(self, src: str, dst: str) -> None:
+        self.rename(src, dst)
+
+    def access(self, path: str, mode: int) -> bool:
+        return self.exists(path)
+
+    def readlink(self, path: str) -> str:
+        raise OSError(_errno.EINVAL, "Not a symbolic link", self._resolve(path))
+
+    def symlink(self, src: str, dst: str) -> None:
+        raise OSError(_errno.EPERM, "MemoryFS does not support symlinks")
+
+    def link(self, src: str, dst: str) -> None:
+        src = self._resolve(src)
+        dst = self._resolve(dst)
+        if src not in self.files:
+            raise FileNotFoundError(_errno.ENOENT, "No such file", src)
+        self.files[dst] = self.files[src]
+
+    def chmod(self, path: str, mode: int) -> None:
+        if not self.exists(path):
+            raise FileNotFoundError(_errno.ENOENT, "No such file or directory", path)
+
+    def chown(self, path: str, uid: int, gid: int) -> None:
+        if not self.exists(path):
+            raise FileNotFoundError(_errno.ENOENT, "No such file or directory", path)
+
+    def truncate(self, path: str, length: int) -> None:
+        path = self._resolve(path)
+        if path not in self.files:
+            raise FileNotFoundError(_errno.ENOENT, "No such file", path)
+        content = self.files[path]
+        if isinstance(content, str):
+            self.files[path] = content[:length]
+        else:
+            self.files[path] = content[:length]
+
     def _resolve(self, path: str) -> str:
         """Resolve a path relative to cwd and normalize . and .. components."""
         if not path.startswith("/"):
