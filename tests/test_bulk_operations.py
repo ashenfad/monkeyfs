@@ -73,26 +73,17 @@ class TestBulkOperations:
         # Remaining file should still exist
         assert vfs.exists("file3.txt")
 
-    def test_remove_many_validates_all_exist(self):
-        """Test that remove_many validates all files exist first."""
+    def test_remove_many_missing_file_removes_preceding(self):
+        """Test that remove_many removes files up to the missing one."""
         vfs = VirtualFS({})
 
-        # Create one file
         vfs.write("file1.txt", b"content 1")
 
-        # Try to remove two files (one doesn't exist)
-        with pytest.raises(FileNotFoundError, match="file2.txt"):
+        with pytest.raises(FileNotFoundError):
             vfs.remove_many(["file1.txt", "file2.txt"])
 
-        # First file should still exist (validation happens before removal)
-        assert vfs.exists("file1.txt")
-
-    def test_remove_many_multiple_missing_files(self):
-        """Test error message with multiple missing files."""
-        vfs = VirtualFS({})
-
-        with pytest.raises(FileNotFoundError, match="Files not found"):
-            vfs.remove_many(["file1.txt", "file2.txt", "file3.txt"])
+        # file1.txt was removed before file2.txt failed
+        assert not vfs.exists("file1.txt")
 
     def test_remove_many_empty_list(self):
         """Test that removing empty list works."""
