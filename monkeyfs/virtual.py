@@ -616,7 +616,7 @@ class VirtualFS:
         if hasattr(self._state, "commit"):
             self._state.commit()
 
-    def list(self, path: str = "/", recursive: bool = False) -> list[str]:
+    def list(self, path: str = ".", recursive: bool = False) -> list[str]:
         """List directory contents.
 
         Returns children of the directory (files and subdirectories).
