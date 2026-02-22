@@ -78,12 +78,12 @@ vfs.list("/")                  # ["file.txt"]
 
 Directories are implicit (inferred from file paths, like S3) but can also be created explicitly with `mkdir()`.
 
-### `IsolatedFS(root, state)`
+### `IsolatedFS(root)`
 
-Real filesystem restricted to a root directory. All paths are resolved within the root; attempts to escape via `..` or symlinks raise `PermissionError`. `state` is a `MutableMapping` for metadata tracking.
+Real filesystem restricted to a root directory. All paths are resolved within the root; attempts to escape via `..` or symlinks raise `PermissionError`.
 
 ```python
-isolated = IsolatedFS(root="/tmp/sandbox", state={})
+isolated = IsolatedFS(root="/tmp/sandbox")
 with patch(isolated):
     open("/etc/passwd")  # PermissionError
 ```
@@ -158,7 +158,7 @@ fs = connect_fs(type="isolated", root="/tmp/sandbox")
 
 - `FSConfig` -- base config
 - `VirtualFSConfig` -- config for VirtualFS (size limits, etc.)
-- `IsolatedFSConfig` -- config for IsolatedFS (root directory, tracking)
+- `IsolatedFSConfig` -- config for IsolatedFS (root directory)
 
 ## Low-level
 

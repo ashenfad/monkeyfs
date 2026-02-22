@@ -32,7 +32,7 @@ def test_expanduser_vfs():
 def test_expanduser_isolated():
     """Test that expanduser returns / when IsolatedFS is active."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        isolated = IsolatedFS(str(tmpdir), state={})
+        isolated = IsolatedFS(str(tmpdir))
 
         # Without IsolatedFS, should return real home
         real_home = os.path.expanduser("~")
@@ -65,7 +65,7 @@ def test_getenv_home_vfs():
 def test_getenv_home_isolated():
     """Test that getenv('HOME') returns / when IsolatedFS is active."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        isolated = IsolatedFS(str(tmpdir), state={})
+        isolated = IsolatedFS(str(tmpdir))
 
         # Without IsolatedFS, should return real home
         real_home = os.getenv("HOME")
@@ -99,7 +99,7 @@ def test_expandvars_vfs():
 def test_expandvars_isolated():
     """Test that expandvars replaces $HOME with / when IsolatedFS is active."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        isolated = IsolatedFS(str(tmpdir), state={})
+        isolated = IsolatedFS(str(tmpdir))
 
         # Without IsolatedFS, $HOME should expand to real home
         real_result = os.path.expandvars("$HOME/.profile")
