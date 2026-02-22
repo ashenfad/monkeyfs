@@ -331,7 +331,7 @@ class IsolatedFS:
             # Return path relative to the root, as if root was /
             return "/" + str(resolved.relative_to(self.root)).lstrip("/")
 
-    def listdir(self, path: str = ".", recursive: bool = False) -> list[str]:
+    def list(self, path: str = ".", recursive: bool = False) -> list[str]:
         """List directory contents.
 
         Args:
@@ -476,12 +476,6 @@ class IsolatedFS:
                 )
             return result
 
-    # VirtualFS-compatible aliases for AgentAwareFS
-
-    def list(self, path: str = ".", recursive: bool = False) -> list[str]:
-        """List directory contents (alias for listdir)."""
-        return self.listdir(path, recursive=recursive)
-
     def getsize(self, path: str) -> int:
         """Get file size in bytes."""
         return self.stat(path).size
@@ -537,7 +531,3 @@ class IsolatedFS:
 
         return sorted(result, key=lambda x: x.path)
 
-    def listdir_detailed(
-        self, path: str = ".", recursive: bool = False
-    ) -> list[FileInfo]:
-        return self.list_detailed(path, recursive=recursive)

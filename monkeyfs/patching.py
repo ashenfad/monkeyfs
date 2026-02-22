@@ -139,14 +139,8 @@ def _require(fs: Any, method: str) -> Any:
 
 
 def _fs_list(fs: Any, path: str) -> list[str]:
-    """List directory children, trying list() then listdir()."""
-    if hasattr(fs, "list"):
-        return fs.list(path)
-    if hasattr(fs, "listdir"):
-        return fs.listdir(path)
-    raise NotImplementedError(
-        f"{type(fs).__name__} does not implement list() or listdir()"
-    )
+    """List directory children via fs.list()."""
+    return fs.list(path)
 
 
 def _metadata_to_stat_result(meta: FileMetadata) -> os.stat_result:
