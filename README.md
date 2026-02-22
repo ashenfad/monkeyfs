@@ -106,6 +106,22 @@ truncate(path, length) -> None  # os.truncate
 | `fcntl` | `fcntl`, `flock`, `lockf` (no-op under VFS; Posix only) |
 | `shutil` | Optimization flags disabled during `patch()` to force string-path code paths |
 
+## Suspending interception
+
+Use `suspend()` to temporarily bypass patching and access the real filesystem. This is useful for host-side I/O inside a patched context (e.g. privileged functions that need real file access):
+
+```python
+from monkeyfs import VirtualFS, patch, suspend
+
+vfs = VirtualFS({})
+
+with patch(vfs):
+    with suspend():
+        # Real filesystem is accessible here
+        import os
+        print(os.getcwd())  # actual working directory, not "/"
+```
+
 ## Backing store commits
 
 VirtualFS accepts any `MutableMapping[str, bytes]` as its state. If the mapping also has a `commit()` method (e.g. gitkv, shelve), VirtualFS calls it after each mutation so changes are persisted immediately.

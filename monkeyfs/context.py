@@ -20,7 +20,7 @@ _defer_commits: contextvars.ContextVar[bool] = contextvars.ContextVar(
 
 
 @contextmanager
-def suspend_fs_interception() -> Iterator[None]:
+def suspend() -> Iterator[None]:
     """Temporarily disable filesystem interception in the current context.
 
     Use this when implementing internal filesystem operations (like inside
