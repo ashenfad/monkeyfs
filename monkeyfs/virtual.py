@@ -980,9 +980,13 @@ class VirtualFS:
         """
         content = self.read(src)
 
+        # Normalize paths for metadata lookups (metadata keys are normalized)
+        src_norm = self._normalize_path(self.resolve_path(src))
+        dst_norm = self._normalize_path(self.resolve_path(dst))
+
         # Preserve source file's metadata (especially created_at)
         metadata = self._get_metadata()
-        src_meta = metadata.get(src)
+        src_meta = metadata.get(src_norm)
 
         # Defer snapshots for intermediate operations
         token = vfs_defer_snapshots.set(True)
@@ -995,8 +999,8 @@ class VirtualFS:
 
             # If source had metadata, preserve its created_at
             if src_meta:
-                dst_meta = metadata[dst]  # write() created this
-                metadata[dst] = FileMetadata(
+                dst_meta = metadata[dst_norm]  # write() created this
+                metadata[dst_norm] = FileMetadata(
                     size=dst_meta.size,
                     created_at=src_meta.created_at,  # Preserve original
                     modified_at=dst_meta.modified_at,  # Use current time

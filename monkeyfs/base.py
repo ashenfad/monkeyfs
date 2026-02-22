@@ -106,49 +106,22 @@ class FileInfo:
 
 @runtime_checkable
 class FileSystem(Protocol):
-    """Structural interface for filesystem implementations.
+    """Minimal interface for use_fs() patching.
 
-    Any object implementing these methods can be used as a filesystem.
-    No inheritance required — uses structural (duck) typing.
+    Only methods that the patching layer dispatches to are listed here.
+    Implementations may (and typically do) have additional methods like
+    read(), write(), glob(), list_detailed(), etc. — those are
+    application-level concerns, not part of the interception contract.
+
+    Required — patching will fail without these:
     """
 
-    def getcwd(self) -> str:
-        """Get current working directory."""
-        ...
-
-    def chdir(self, path: str) -> None:
-        """Change current working directory."""
-        ...
-
-    def glob(self, pattern: str) -> list[str]:
-        """Return list of paths matching a glob pattern."""
-        ...
-
     def open(self, path: str, mode: str = "r", **kwargs: Any) -> Any:
-        """Open a file.
-
-        Args:
-            path: File path to open.
-            mode: File mode.
-            kwargs: Additional arguments.
-
-        Returns:
-            File-like object.
-        """
+        """Open a file."""
         ...
 
-    def read(self, path: str) -> bytes:
-        """Read entire file as bytes."""
-        ...
-
-    def write(self, path: str, content: bytes, mode: str = "w") -> None:
-        """Write bytes to file.
-
-        Args:
-            path: File path to write.
-            content: Bytes to write.
-            mode: Write mode ('w' for write/overwrite, 'a' for append).
-        """
+    def stat(self, path: str) -> FileMetadata:
+        """Get file metadata."""
         ...
 
     def exists(self, path: str) -> bool:
@@ -163,50 +136,12 @@ class FileSystem(Protocol):
         """Check if path is a directory."""
         ...
 
-    def islink(self, path: str) -> bool:
-        """Check if path is a symbolic link."""
-        ...
-
-    def lexists(self, path: str) -> bool:
-        """Check if path exists (without following symlinks)."""
-        ...
-
-    def samefile(self, path1: str, path2: str) -> bool:
-        """Check if two paths refer to the same file."""
-        ...
-
-    def realpath(self, path: str) -> str:
-        """Return the canonical path."""
-        ...
-
     def list(self, path: str = ".") -> list[str]:
         """List directory contents (filenames only)."""
         ...
 
-    def list_detailed(self, path: str = ".") -> list[FileInfo]:
-        """List directory contents with details."""
-        ...
-
-    def listdir(self, path: str = "/", recursive: bool = False) -> list[str]:
-        """List directory contents as paths."""
-        ...
-
-    def listdir_detailed(
-        self, path: str = "/", recursive: bool = False
-    ) -> list[FileInfo]:
-        """List directory contents with full metadata."""
-        ...
-
-    def rmdir(self, path: str) -> None:
-        """Remove an empty directory."""
-        ...
-
     def remove(self, path: str) -> None:
         """Remove a file."""
-        ...
-
-    def remove_many(self, paths: list[str]) -> None:
-        """Remove multiple files."""
         ...
 
     def mkdir(self, path: str, parents: bool = False, exist_ok: bool = False) -> None:
@@ -221,18 +156,10 @@ class FileSystem(Protocol):
         """Rename/move a file or directory."""
         ...
 
-    def stat(self, path: str) -> FileMetadata:
-        """Get file metadata."""
+    def getcwd(self) -> str:
+        """Get current working directory."""
         ...
 
-    def getsize(self, path: str) -> int:
-        """Get file size in bytes."""
-        ...
-
-    def write_many(self, files: dict[str, bytes]) -> None:
-        """Write multiple files at once."""
-        ...
-
-    def get_metadata_snapshot(self) -> dict[str, FileMetadata]:
-        """Get snapshot of all file metadata."""
+    def chdir(self, path: str) -> None:
+        """Change current working directory."""
         ...

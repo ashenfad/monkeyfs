@@ -780,6 +780,7 @@ def _install() -> None:
     _vfs_makedirs.__name__ = "makedirs"
     _vfs_rename.__name__ = "rename"
     _vfs_stat.__name__ = "stat"
+    _vfs_lstat.__name__ = "lstat"
     _vfs_scandir.__name__ = "scandir"
     _vfs_getcwd.__name__ = "getcwd"
     _vfs_chdir.__name__ = "chdir"
@@ -819,7 +820,7 @@ def _install() -> None:
         if hasattr(accessor, "unlink"):
             accessor.unlink = staticmethod(_vfs_unlink)
         if hasattr(accessor, "rmdir"):
-            accessor.rmdir = staticmethod(_vfs_remove)
+            accessor.rmdir = staticmethod(_vfs_rmdir)
         if hasattr(accessor, "rename"):
             accessor.rename = staticmethod(_vfs_rename)
         if hasattr(accessor, "mkdir"):
