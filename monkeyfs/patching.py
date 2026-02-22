@@ -110,6 +110,27 @@ def _is_safe_system_path(path: str | Path) -> bool:
         return False
 
 
+def _require(fs: Any, method: str) -> Any:
+    """Get a method from the fs, or raise NotImplementedError if missing."""
+    fn = getattr(fs, method, None)
+    if fn is None:
+        raise NotImplementedError(
+            f"{type(fs).__name__} does not implement {method}()"
+        )
+    return fn
+
+
+def _fs_list(fs: Any, path: str) -> list[str]:
+    """List directory children, trying list() then listdir()."""
+    if hasattr(fs, "list"):
+        return fs.list(path)
+    if hasattr(fs, "listdir"):
+        return fs.listdir(path)
+    raise NotImplementedError(
+        f"{type(fs).__name__} does not implement list() or listdir()"
+    )
+
+
 def _metadata_to_stat_result(meta: FileMetadata) -> os.stat_result:
     """Convert FileMetadata to os.stat_result."""
     return os.stat_result((
@@ -165,7 +186,7 @@ def _vfs_listdir(path: str = ".") -> list[str]:
         path_str = str(path)
         try:
             if fs.isdir(path_str):
-                return fs.list(path_str)
+                return _fs_list(fs, path_str)
         except (PermissionError, FileNotFoundError, NotADirectoryError):
             if _is_safe_system_path(path):
                 return _originals["listdir"](path)
@@ -255,7 +276,7 @@ def _vfs_scandir(path: str = ".") -> Any:
                 if not fs.isdir(path_str):
                     raise NotADirectoryError(f"Not a directory: {path}")
 
-                names = fs.list(path_str)
+                names = _fs_list(fs, path_str)
                 for name in names:
                     child_path = os.path.join(path_str, name)
                     try:
@@ -319,7 +340,7 @@ def _vfs_rmdir(path: str, *, dir_fd: int | None = None) -> None:
 
     fs = current_fs.get()
     if fs is not None:
-        return fs.rmdir(str(path))
+        return _require(fs, "rmdir")(str(path))
     return _originals["rmdir"](path)
 
 
@@ -424,7 +445,7 @@ def _vfs_islink(path: str, **kwargs: Any) -> bool:
     fs = current_fs.get()
     if fs is not None:
         try:
-            return fs.islink(str(path))
+            return _require(fs, "islink")(str(path))
         except PermissionError:
             pass
         if _is_safe_system_path(path):
@@ -444,7 +465,7 @@ def _vfs_samefile(path1: str, path2: str, **kwargs: Any) -> bool:
     fs = current_fs.get()
     if fs is not None:
         try:
-            return fs.samefile(str(path1), str(path2))
+            return _require(fs, "samefile")(str(path1), str(path2))
         except (PermissionError, FileNotFoundError):
             if _is_safe_system_path(path1) and _is_safe_system_path(path2):
                 return _originals["samefile"](path1, path2, **kwargs)
@@ -462,7 +483,7 @@ def _vfs_realpath(path: str | os.PathLike[Any], **kwargs: Any) -> str:
     if fs is not None:
         path_str = str(path)
         try:
-            return fs.realpath(path_str)
+            return _require(fs, "realpath")(path_str)
         except PermissionError:
             if _is_safe_system_path(path):
                 return _originals["realpath"](path, **kwargs)
@@ -476,7 +497,7 @@ def _vfs_getsize(path: str, **kwargs: Any) -> int:
     fs = current_fs.get()
     if fs is not None:
         try:
-            return fs.getsize(str(path))
+            return _require(fs, "getsize")(str(path))
         except (PermissionError, FileNotFoundError):
             if _is_safe_system_path(path):
                 return _originals["getsize"](path, **kwargs)
