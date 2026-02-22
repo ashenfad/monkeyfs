@@ -901,8 +901,6 @@ class VirtualFS:
             raise FileExistsError(f"Directory exists: {path}")
 
         # Create directory metadata entry
-        from datetime import datetime, timezone
-
         now = datetime.now(timezone.utc).isoformat()
         metadata = self._get_metadata()
         metadata[normalized] = FileMetadata(
@@ -1110,8 +1108,6 @@ class VirtualFS:
 
         # Check for directory
         if self.isdir(path):
-            from datetime import datetime, timezone
-
             now = datetime.now(timezone.utc).isoformat()
             return FileMetadata(size=0, created_at=now, modified_at=now, is_dir=True)
 
