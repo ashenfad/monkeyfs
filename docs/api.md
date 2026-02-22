@@ -40,7 +40,8 @@ Suppress per-mutation commits to the VirtualFS backing store:
 ```python
 from monkeyfs import VirtualFS, defer_commits, patch
 
-vfs = VirtualFS(my_persistent_store)
+store = MyPersistentMapping()  # any MutableMapping with a commit() method
+vfs = VirtualFS(store)
 
 with defer_commits():
     with patch(vfs):
@@ -48,7 +49,7 @@ with defer_commits():
             with open(f"file_{i}.txt", "w") as f:
                 f.write(str(i))
 
-my_persistent_store.commit()
+store.commit()  # persist all writes at once
 ```
 
 VirtualFS accepts any `MutableMapping[str, bytes]` as its state. If the mapping also has a `commit()` method (e.g. gitkv, shelve), VirtualFS calls it after each mutation so changes are persisted immediately. `defer_commits()` suppresses those calls, letting you batch writes and commit once at the end. This avoids expensive per-write persistence during bulk operations.
