@@ -319,36 +319,30 @@ class TestIsolatedListdir:
         fs = IsolatedFS(str(tmp_path))
         fs.write("a.txt", b"a")
         fs.write("b.txt", b"b")
-        assert sorted(fs.listdir("/")) == ["a.txt", "b.txt"]
+        assert sorted(fs.list("/")) == ["a.txt", "b.txt"]
 
     def test_listdir_subdir(self, tmp_path):
         """Test listing files in a subdirectory."""
         fs = IsolatedFS(str(tmp_path))
         fs.write("sub/x.txt", b"x")
         fs.write("sub/y.txt", b"y")
-        assert sorted(fs.listdir("sub")) == ["x.txt", "y.txt"]
+        assert sorted(fs.list("sub")) == ["x.txt", "y.txt"]
 
     def test_listdir_empty(self, tmp_path):
         """Test listing an empty directory returns empty list."""
         fs = IsolatedFS(str(tmp_path))
         fs.mkdir("empty")
-        assert fs.listdir("empty") == []
+        assert fs.list("empty") == []
 
     def test_listdir_recursive(self, tmp_path):
         """Test recursive listing."""
         fs = IsolatedFS(str(tmp_path))
         fs.write("a.txt", b"a")
         fs.write("sub/b.txt", b"b")
-        result = fs.listdir("/", recursive=True)
+        result = fs.list("/", recursive=True)
         assert "a.txt" in result
         assert "sub" in result
         assert os.path.join("sub", "b.txt") in result
-
-    def test_list_alias(self, tmp_path):
-        """Test that list() returns the same as listdir()."""
-        fs = IsolatedFS(str(tmp_path))
-        fs.write("file.txt", b"x")
-        assert fs.list("/") == fs.listdir("/")
 
 
 # ---------------------------------------------------------------------------
