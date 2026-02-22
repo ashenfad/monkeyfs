@@ -571,15 +571,12 @@ class TestIsolatedOptionalMethods:
         assert fs.read("data.txt") == b""
 
     def test_symlink_and_readlink(self, tmp_path):
-        """Test symlink creation and readlink via real OS paths."""
+        """Test symlink creation and readlink."""
         fs = IsolatedFS(str(tmp_path), {})
         fs.write("target.txt", b"target data")
         fs.symlink("target.txt", "link.txt")
-        # _validate_path resolves symlinks, so readlink must be called on the
-        # symlink directly at the OS level to verify the link was created.
-        link_real = tmp_path / "link.txt"
-        assert link_real.is_symlink()
-        target_str = os.readlink(link_real)
+        assert fs.islink("link.txt")
+        target_str = fs.readlink("link.txt")
         assert "target.txt" in target_str
 
     def test_symlink_and_islink(self, tmp_path):
@@ -594,6 +591,16 @@ class TestIsolatedOptionalMethods:
         fs = IsolatedFS(str(tmp_path), {})
         fs.write("plain.txt", b"x")
         assert fs.islink("plain.txt") is False
+
+    def test_islink_cwd_relative(self, tmp_path):
+        """Test islink resolves relative paths against CWD."""
+        fs = IsolatedFS(str(tmp_path), {})
+        fs.mkdir("subdir")
+        fs.write("subdir/target.txt", b"data")
+        fs.symlink("subdir/target.txt", "subdir/link.txt")
+        fs.chdir("subdir")
+        assert fs.islink("link.txt") is True
+        assert fs.islink("target.txt") is False
 
     def test_lexists(self, tmp_path):
         """Test lexists: True for existing file, False for missing."""
