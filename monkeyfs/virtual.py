@@ -78,6 +78,12 @@ class VirtualFile:
             raise ValueError(f"I/O operation on closed file: {self._path}")
         return self._buffer.write(data)  # type: ignore[arg-type]
 
+    def writelines(self, lines: list[str | bytes]) -> None:
+        """Write a list of lines to the buffer."""
+        if self._closed:
+            raise ValueError(f"I/O operation on closed file: {self._path}")
+        self._buffer.writelines(lines)  # type: ignore[arg-type]
+
     def read(self, size: int = -1) -> str | bytes:
         """Read is not supported for write-only files."""
         raise io.UnsupportedOperation("read")
