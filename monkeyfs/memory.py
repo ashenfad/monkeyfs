@@ -13,7 +13,7 @@ from typing import Any
 class MemoryFS:
     """Simple in-memory filesystem.
 
-    Stores files as ``str | bytes`` in a plain dict and tracks directories
+    Stores files as ``bytes`` in a plain dict and tracks directories
     in a set.  Implements the full ``FileSystem`` protocol so it works
     transparently with ``use_fs()`` patching.
 
@@ -22,7 +22,7 @@ class MemoryFS:
     """
 
     def __init__(self) -> None:
-        self.files: dict[str, str | bytes] = {}
+        self.files: dict[str, bytes] = {}
         self.dirs: set[str] = {"/"}
         self._cwd = "/"
 
@@ -33,12 +33,8 @@ class MemoryFS:
                 raise FileNotFoundError(_errno.ENOENT, "No such file", path)
             content = self.files[path]
             if "b" in mode:
-                if isinstance(content, str):
-                    content = content.encode("utf-8")
                 return BytesIO(content)
-            if isinstance(content, bytes):
-                content = content.decode("utf-8")
-            return StringIO(content)
+            return StringIO(content.decode("utf-8"))
         elif "w" in mode or "a" in mode:
             parent = posixpath.dirname(path)
             if parent != path and parent not in self.dirs:
@@ -48,13 +44,14 @@ class MemoryFS:
             if "a" in mode and path in self.files:
                 existing = self.files[path]
                 if is_binary:
-                    buf.write(existing if isinstance(existing, bytes) else existing.encode("utf-8"))
+                    buf.write(existing)
                 else:
-                    buf.write(existing if isinstance(existing, str) else existing.decode("utf-8"))
+                    buf.write(existing.decode("utf-8"))
             original_close = buf.close
 
             def close_and_save() -> None:
-                self.files[path] = buf.getvalue()
+                value = buf.getvalue()
+                self.files[path] = value if is_binary else value.encode("utf-8")
                 original_close()
 
             buf.close = close_and_save  # type: ignore[method-assign]
@@ -65,8 +62,7 @@ class MemoryFS:
         path = self._resolve(path)
         if path not in self.files:
             raise FileNotFoundError(_errno.ENOENT, "No such file", path)
-        content = self.files[path]
-        return content.encode("utf-8") if isinstance(content, str) else content
+        return self.files[path]
 
     def write(self, path: str, content: bytes, mode: str = "w") -> None:
         path = self._resolve(path)
@@ -80,8 +76,7 @@ class MemoryFS:
     def stat(self, path: str) -> Any:
         path = self._resolve(path)
         if path in self.files:
-            content = self.files[path]
-            size = len(content.encode("utf-8") if isinstance(content, str) else content)
+            size = len(self.files[path])
             return os.stat_result((
                 stat_mod.S_IFREG | 0o644,
                 0, 0, 1, 1000, 1000,
@@ -145,8 +140,7 @@ class MemoryFS:
         path = self._resolve(path)
         if path not in self.files:
             raise FileNotFoundError(_errno.ENOENT, "No such file", path)
-        content = self.files[path]
-        return len(content.encode("utf-8") if isinstance(content, str) else content)
+        return len(self.files[path])
 
     def glob(self, pattern: str) -> list[str]:
         all_paths = list(self.files.keys())
@@ -255,11 +249,7 @@ class MemoryFS:
         path = self._resolve(path)
         if path not in self.files:
             raise FileNotFoundError(_errno.ENOENT, "No such file", path)
-        content = self.files[path]
-        if isinstance(content, str):
-            self.files[path] = content[:length]
-        else:
-            self.files[path] = content[:length]
+        self.files[path] = self.files[path][:length]
 
     def _resolve(self, path: str) -> str:
         """Resolve a path relative to cwd and normalize . and .. components."""
