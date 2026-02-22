@@ -5,7 +5,9 @@ Defines the common interface for filesystem implementations (VirtualFS, Isolated
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
 
@@ -50,19 +52,13 @@ class FileMetadata:
 
     @property
     def st_uid(self) -> int:
-        import os as _os
-
-        return _os.getuid() if hasattr(_os, "getuid") else 0
+        return os.getuid() if hasattr(os, "getuid") else 0
 
     @property
     def st_gid(self) -> int:
-        import os as _os
-
-        return _os.getgid() if hasattr(_os, "getgid") else 0
+        return os.getgid() if hasattr(os, "getgid") else 0
 
     def _parse_ts(self, iso_str: str) -> float:
-        from datetime import datetime
-
         try:
             return datetime.fromisoformat(iso_str).timestamp()
         except ValueError:
