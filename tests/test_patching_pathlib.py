@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from monkeyfs import IsolatedFS, VirtualFS, use_fs
+from monkeyfs import IsolatedFS, VirtualFS, patch
 
 
 class TestPathlibIntegration:
@@ -16,7 +16,7 @@ class TestPathlibIntegration:
         vfs = VirtualFS({})
         vfs.write("test.txt", b"virtual content")
 
-        with use_fs(vfs):
+        with patch(vfs):
             p = Path("test.txt")
             assert p.exists()
             assert p.is_file()
@@ -31,7 +31,7 @@ class TestPathlibIntegration:
 
         fs = IsolatedFS(root=str(root), state={})
 
-        with use_fs(fs):
+        with patch(fs):
             p = Path("test.txt")
             assert p.exists()
             assert p.read_text() == "isolated content"
@@ -46,7 +46,7 @@ class TestPathlibIntegration:
         vfs.write("file1.txt", b"c1")
         vfs.write("subdir/file2.txt", b"c2")
 
-        with use_fs(vfs):
+        with patch(vfs):
             # List root
             items = list(Path(".").iterdir())
             names = sorted([p.name for p in items])
@@ -68,7 +68,7 @@ class TestPathlibIntegration:
 
         fs = IsolatedFS(root=str(root), state={})
 
-        with use_fs(fs):
+        with patch(fs):
             # List root
             items = list(Path(".").iterdir())
             names = sorted([p.name for p in items])
@@ -88,7 +88,7 @@ class TestPathlibIntegration:
         vfs.write("b.txt", b"")
         vfs.write("sub/c.py", b"")
 
-        with use_fs(vfs):
+        with patch(vfs):
             # Simple glob
             py_files = sorted([p.name for p in Path(".").glob("*.py")])
             assert py_files == ["a.py"]
@@ -106,7 +106,7 @@ class TestPathlibIntegration:
 
         vfs = VirtualFS({})  # Empty VFS
 
-        with use_fs(vfs):
+        with patch(vfs):
             # Should still exist and be readable
             assert sys_path.exists()
             assert sys_path.is_file()
@@ -122,7 +122,7 @@ class TestPathlibIntegration:
 
         fs = IsolatedFS(root=str(root), state={})
 
-        with use_fs(fs):
+        with patch(fs):
             p = Path("stat_test.txt")
             st = p.stat()
 
@@ -144,7 +144,7 @@ class TestPathlibIntegration:
 
         fs = IsolatedFS(root=str(root), state={})
 
-        with use_fs(fs):
+        with patch(fs):
             # Create file
             p = Path("delete_me.txt")
             p.write_text("content")
@@ -169,7 +169,7 @@ class TestPathlibIntegration:
         vfs = VirtualFS({})
         vfs.write("vfs_delete.txt", b"content")
 
-        with use_fs(vfs):
+        with patch(vfs):
             p = Path("vfs_delete.txt")
             assert p.exists()
 
@@ -182,7 +182,7 @@ class TestPathlibIntegration:
         """Test Path.touch() works with VFS."""
         vfs = VirtualFS({})
 
-        with use_fs(vfs):
+        with patch(vfs):
             p = Path("touch_me.txt")
             assert not p.exists()
 
@@ -205,7 +205,7 @@ class TestPathlibIntegration:
         vfs = VirtualFS({})
         vfs.write("leo.ics", b"data")
 
-        with use_fs(vfs):
+        with patch(vfs):
             p = Path("leo.ics")
             s = p.stat()
 
@@ -219,7 +219,7 @@ class TestPathlibIntegration:
 
         # Test VirtualFS
         vfs = VirtualFS({})
-        with use_fs(vfs):
+        with patch(vfs):
             assert os.getcwd() == "/"
             # Path('.').resolve() calls os.getcwd()
             assert str(Path(".").resolve()) == "/"
@@ -229,7 +229,7 @@ class TestPathlibIntegration:
         root = tmp_path / "root"
         root.mkdir()
         fs = IsolatedFS(root=str(root), state={})
-        with use_fs(fs):
+        with patch(fs):
             assert os.getcwd() == "/"
             assert str(Path(".").resolve()) == "/"
             assert str(Path(".").absolute()) == "/"
@@ -239,7 +239,7 @@ class TestPathlibIntegration:
         vfs = VirtualFS({})
         vfs.write("file.txt", b"content")
 
-        with use_fs(vfs):
+        with patch(vfs):
             p = Path("file.txt")
 
             # Test Path.lstat()

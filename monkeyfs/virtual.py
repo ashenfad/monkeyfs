@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 
 from collections.abc import MutableMapping
 
-from .context import vfs_defer_snapshots
+from .context import _defer_commits
 
 from .base import FileInfo, FileMetadata
 
@@ -564,7 +564,7 @@ class VirtualFS:
         self._current_size = None  # Will be recomputed on next access
 
         # Snapshot if not deferred and state supports it
-        if not vfs_defer_snapshots.get() and hasattr(self._state, "commit"):
+        if not _defer_commits.get() and hasattr(self._state, "commit"):
             self._state.commit()
 
     def write_many(self, files: dict[str, bytes]) -> None:
@@ -845,7 +845,7 @@ class VirtualFS:
         self._current_size = None  # Will be recomputed on next access
 
         # Snapshot if not deferred and state supports it
-        if not vfs_defer_snapshots.get() and hasattr(self._state, "commit"):
+        if not _defer_commits.get() and hasattr(self._state, "commit"):
             self._state.commit()
 
     def remove_many(self, paths: list[str]) -> None:
@@ -1011,7 +1011,7 @@ class VirtualFS:
             metadata = self._get_metadata()
             src_meta = metadata.get(src_norm)
 
-            token = vfs_defer_snapshots.set(True)
+            token = _defer_commits.set(True)
             try:
                 self.write(dst, content)
 
@@ -1028,7 +1028,7 @@ class VirtualFS:
 
                 self.remove(src)
             finally:
-                vfs_defer_snapshots.reset(token)
+                _defer_commits.reset(token)
 
         elif self.isdir(src):
             # Directory rename — move all children
@@ -1046,7 +1046,7 @@ class VirtualFS:
                 if file_path == src_norm or file_path.startswith(src_prefix):
                     files_to_move.append((key, file_path))
 
-            token = vfs_defer_snapshots.set(True)
+            token = _defer_commits.set(True)
             try:
                 metadata = self._get_metadata()
                 for key, file_path in files_to_move:
@@ -1074,11 +1074,11 @@ class VirtualFS:
                 self._set_metadata(metadata)
                 self._dir_cache = None
             finally:
-                vfs_defer_snapshots.reset(token)
+                _defer_commits.reset(token)
         else:
             raise FileNotFoundError(src)
 
-        if not vfs_defer_snapshots.get() and hasattr(self._state, "commit"):
+        if not _defer_commits.get() and hasattr(self._state, "commit"):
             self._state.commit()
 
     def replace(self, src: str, dst: str) -> None:

@@ -2,7 +2,7 @@
 
 Transparent filesystem interception via monkey-patching.
 
-Patches `open()`, `os.listdir()`, `os.stat()`, and 30+ other stdlib functions to route through a virtual or isolated filesystem. Patches are installed at import time and are inert until activated with `use_fs()`. Uses `contextvars` for async-safe isolation between concurrent tasks. Zero dependencies.
+Patches `open()`, `os.listdir()`, `os.stat()`, and 30+ other stdlib functions to route through a virtual or isolated filesystem. Patches are installed at import time and are inert until activated with `patch()`. Uses `contextvars` for async-safe isolation between concurrent tasks. Zero dependencies.
 
 ## Features
 
@@ -22,11 +22,11 @@ pip install monkeyfs
 ## Quick example
 
 ```python
-from monkeyfs import VirtualFS, use_fs
+from monkeyfs import VirtualFS, patch
 
 vfs = VirtualFS({})
 
-with use_fs(vfs):
+with patch(vfs):
     # Standard Python I/O is transparently intercepted
     with open("data.csv", "w") as f:
         f.write("name,score\nalice,98\nbob,87\n")
@@ -44,11 +44,11 @@ with use_fs(vfs):
 Restricts file operations to a root directory on the real filesystem:
 
 ```python
-from monkeyfs import IsolatedFS, use_fs
+from monkeyfs import IsolatedFS, patch
 
 isolated = IsolatedFS(root="/tmp/sandbox", state={})
 
-with use_fs(isolated):
+with patch(isolated):
     with open("notes.txt", "w") as f:
         f.write("hello")          # Written to /tmp/sandbox/notes.txt
 
@@ -104,7 +104,29 @@ truncate(path, length) -> None  # os.truncate
 | `pathlib` | `Path.touch`, `Path._globber` (3.13+) |
 | `glob` | `_StringGlobber` (3.13+) |
 | `fcntl` | `fcntl`, `flock`, `lockf` (no-op under VFS; Posix only) |
-| `shutil` | Optimization flags disabled during `use_fs()` to force string-path code paths |
+| `shutil` | Optimization flags disabled during `patch()` to force string-path code paths |
+
+## Backing store commits
+
+VirtualFS accepts any `MutableMapping[str, bytes]` as its state. If the mapping also has a `commit()` method (e.g. gitkv, shelve), VirtualFS calls it after each mutation so changes are persisted immediately.
+
+Use `defer_commits()` to suppress per-mutation commits during bulk operations:
+
+```python
+from monkeyfs import VirtualFS, defer_commits, patch
+
+vfs = VirtualFS(my_persistent_store)
+
+with defer_commits():
+    with patch(vfs):
+        # Many writes happen here -- no commit() calls
+        for i in range(1000):
+            with open(f"file_{i}.txt", "w") as f:
+                f.write(str(i))
+
+# Call commit yourself when ready
+my_persistent_store.commit()
+```
 
 ## Known limitations
 

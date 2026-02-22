@@ -100,7 +100,7 @@ class FileInfo:
 
 @runtime_checkable
 class FileSystem(Protocol):
-    """Minimal interface for use_fs() patching.
+    """Minimal interface for patch() patching.
 
     Only methods that the patching layer dispatches to are listed here.
     Implementations may (and typically do) have additional methods like

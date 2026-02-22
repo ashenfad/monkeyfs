@@ -8,7 +8,7 @@ import os
 
 import pytest
 
-from monkeyfs import VirtualFS, use_fs
+from monkeyfs import VirtualFS, patch
 
 
 class TestVFSMkdir:
@@ -280,7 +280,7 @@ class TestVFSOsPatches:
         vfs = VirtualFS({})
         vfs.mkdir("testdir")
 
-        with use_fs(vfs):
+        with patch(vfs):
             assert os.getcwd() == "/"
 
             os.chdir("testdir")
@@ -293,7 +293,7 @@ class TestVFSOsPatches:
         """os.mkdir and os.rmdir work with VFS."""
         vfs = VirtualFS({})
 
-        with use_fs(vfs):
+        with patch(vfs):
             os.mkdir("newdir")
             assert os.path.isdir("newdir") is True
 
@@ -304,7 +304,7 @@ class TestVFSOsPatches:
         """os.makedirs works with VFS."""
         vfs = VirtualFS({})
 
-        with use_fs(vfs):
+        with patch(vfs):
             os.makedirs("a/b/c", exist_ok=True)
 
             assert os.path.isdir("a") is True
@@ -316,7 +316,7 @@ class TestVFSOsPatches:
         vfs = VirtualFS({})
         vfs.makedirs("mydir/subdir")
 
-        with use_fs(vfs):
+        with patch(vfs):
             assert os.path.abspath("file.txt") == "/file.txt"
 
             os.chdir("mydir")
