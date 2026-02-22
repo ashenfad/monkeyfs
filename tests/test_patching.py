@@ -614,7 +614,7 @@ class TestIsolatedPatching:
         root.mkdir()
         (root / "test.txt").write_text("content")
 
-        isolated = IsolatedFS(str(root), state={})
+        isolated = IsolatedFS(str(root))
 
         with patch(isolated):
             assert os.path.realpath("test.txt") == "/test.txt"
@@ -632,7 +632,7 @@ class TestIsolatedPatching:
         link = root / "link.txt"
         link.symlink_to(file)
 
-        isolated = IsolatedFS(str(root), state={})
+        isolated = IsolatedFS(str(root))
 
         with patch(isolated):
             assert os.path.islink("link.txt") is True
@@ -649,7 +649,7 @@ class TestIsolatedPatching:
         link = root / "link.txt"
         link.symlink_to(file)
 
-        isolated = IsolatedFS(str(root), state={})
+        isolated = IsolatedFS(str(root))
 
         with patch(isolated):
             assert os.path.samefile("test.txt", "link.txt") is True

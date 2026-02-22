@@ -1,18 +1,15 @@
-"""Isolated filesystem with path restriction and optional tracking.
+"""Isolated filesystem with path restriction.
 
-Provides real filesystem access restricted to a specific directory,
-with optional file change tracking via FileEvents.
+Provides real filesystem access restricted to a specific directory.
 """
 
 from __future__ import annotations
 
 import io
 import os
-import pickle
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-
-from collections.abc import MutableMapping
 
 from .context import suspend
 
@@ -23,7 +20,7 @@ class IsolatedFS:
     """FileSystem interface restricted to a root directory.
 
     All file operations are validated to ensure paths stay within the
-    configured root directory. Optionally tracks file changes for FileEvents.
+    configured root directory.
 
     Security features:
     - Rejects paths outside root directory
@@ -31,18 +28,14 @@ class IsolatedFS:
     - Normalizes all path variations (../, ./, etc.)
     """
 
-    METADATA_KEY = "__isolated_fs_metadata__"
-    CWD_KEY = "__isolated_cwd__"
-
-    def __init__(self, root: str, state: MutableMapping[str, bytes]):
+    def __init__(self, root: str):
         """Initialize isolated filesystem.
 
         Args:
-            root: Absolute path to root directory (must exist).
-            state: State for metadata and CWD tracking.
+            root: Absolute path to root directory (created if missing).
 
         Raises:
-            ValueError: If root is not an absolute path or doesn't exist.
+            ValueError: If root is not an absolute path or is not a directory.
         """
         # Suspend interception during init to ensure real verify works even if VFS active
         with suspend():
@@ -56,7 +49,7 @@ class IsolatedFS:
             if not self.root.is_dir():
                 raise ValueError(f"Root must be a directory: {root}")
 
-        self._state = state
+        self._cwd = "/"
 
     # -------------------------------------------------------------------------
     # Working Directory
@@ -68,7 +61,7 @@ class IsolatedFS:
         Returns:
             Current working directory path (defaults to "/").
         """
-        return self._state.get(self.CWD_KEY) or "/"
+        return self._cwd
 
     def chdir(self, path: str) -> None:
         """Change current working directory.
@@ -84,7 +77,7 @@ class IsolatedFS:
         with suspend():
             if not real_path.is_dir():
                 raise FileNotFoundError(f"No such directory: '{path}'")
-        self._state[self.CWD_KEY] = (
+        self._cwd = (
             "/" + resolved_virtual.lstrip("/") if resolved_virtual else "/"
         )
 
@@ -245,73 +238,6 @@ class IsolatedFS:
 
             return parent_resolved / host_path.name
 
-    def _get_metadata(self) -> dict[str, FileMetadata]:
-        """Get current metadata dictionary from state."""
-        if self._state is None:
-            return {}
-        raw = self._state.get(self.METADATA_KEY)
-        if raw is None:
-            return {}
-        return pickle.loads(raw)
-
-    def _set_metadata(self, metadata: dict[str, FileMetadata]) -> None:
-        """Store metadata dictionary in state."""
-        if self._state is not None:
-            self._state[self.METADATA_KEY] = pickle.dumps(metadata)
-
-    def _update_file_metadata(self, path: str, size: int) -> None:
-        """Update metadata for a file after modification.
-
-        Args:
-            path: Normalized file path (relative to root).
-            size: File size in bytes.
-        """
-        if self._state is None:
-            return
-
-        metadata = self._get_metadata()
-        resolved = self._validate_path(path)
-        rel_path = str(resolved.relative_to(self.root))
-
-        # Get current timestamps
-        from datetime import datetime, timezone
-
-        now = datetime.now(timezone.utc).isoformat()
-
-        if rel_path not in metadata:
-            # New file
-            metadata[rel_path] = FileMetadata(
-                size=size,
-                created_at=now,
-                modified_at=now,
-            )
-        else:
-            # Existing file - preserve created_at
-            metadata[rel_path] = FileMetadata(
-                size=size,
-                created_at=metadata[rel_path].created_at,
-                modified_at=now,
-            )
-
-        self._set_metadata(metadata)
-
-    def _remove_file_metadata(self, path: str) -> None:
-        """Remove metadata for a deleted file.
-
-        Args:
-            path: File path that was deleted.
-        """
-        if self._state is None:
-            return
-
-        metadata = self._get_metadata()
-        resolved = self._validate_path(path)
-        rel_path = str(resolved.relative_to(self.root))
-
-        if rel_path in metadata:
-            del metadata[rel_path]
-            self._set_metadata(metadata)
-
     def open(self, path: str, mode: str = "r", **kwargs: Any) -> Any:
         """Open a file within the isolated filesystem.
 
@@ -327,30 +253,9 @@ class IsolatedFS:
             PermissionError: If path is outside root.
             FileNotFoundError: If file doesn't exist (read mode).
         """
-        # Suspend for the whole operation including validation and opening
         with suspend():
             resolved = self._validate_path(path)
-
-            # Open the file calling io.open to be extra safe
-            f = io.open(resolved, mode, **kwargs)
-
-            # Track metadata for write/append modes
-            if any(m in mode for m in ["w", "a", "+"]):
-                # Register callback to update metadata on close
-                original_close = f.close
-
-                def tracked_close():
-                    # Need to check exists/stat which also need suspension
-                    with suspend():
-                        original_close()
-                        if resolved.exists():
-                            # Note: self._update_file_metadata calls _validate_path which suspends,
-                            # but resolved.stat() needs suspension here.
-                            self._update_file_metadata(path, resolved.stat().st_size)
-
-                f.close = tracked_close
-
-            return f
+            return io.open(resolved, mode, **kwargs)
 
     def read(self, path: str) -> bytes:
         """Read entire file as bytes."""
@@ -375,8 +280,6 @@ class IsolatedFS:
                     f.write(content)
             else:
                 resolved.write_bytes(content)
-
-            self._update_file_metadata(path, resolved.stat().st_size)
 
     def exists(self, path: str) -> bool:
         """Check if path exists."""
@@ -455,7 +358,6 @@ class IsolatedFS:
             if resolved.is_dir():
                 raise IsADirectoryError(f"Is a directory: {path}")
             resolved.unlink()
-            self._remove_file_metadata(path)
 
     def mkdir(self, path: str, parents: bool = False, exist_ok: bool = False) -> None:
         """Create a directory."""
@@ -475,14 +377,7 @@ class IsolatedFS:
             src_resolved = self._validate_path(src)
             dst_resolved = self._validate_path(dst)
 
-            # Track metadata change if it's a file
-            if src_resolved.is_file():
-                self._remove_file_metadata(src)
-                size = src_resolved.stat().st_size
-                src_resolved.rename(dst_resolved)
-                self._update_file_metadata(dst, size)
-            else:
-                src_resolved.rename(dst_resolved)
+            src_resolved.rename(dst_resolved)
 
     def replace(self, src: str, dst: str) -> None:
         """Replace dst with src."""
@@ -542,7 +437,6 @@ class IsolatedFS:
         with suspend():
             resolved = self._validate_path(path)
             os.truncate(resolved, length)
-            self._update_file_metadata(path, length)
 
     def stat(self, path: str) -> FileMetadata:
         """Get file metadata."""
@@ -552,8 +446,6 @@ class IsolatedFS:
                 raise FileNotFoundError(f"No such file: {path}")
 
             stat_result = resolved.stat()
-            from datetime import datetime, timezone
-
             return FileMetadata(
                 size=stat_result.st_size,
                 created_at=datetime.fromtimestamp(
@@ -565,8 +457,24 @@ class IsolatedFS:
             )
 
     def get_metadata_snapshot(self) -> dict[str, FileMetadata]:
-        """Get current metadata snapshot for all tracked files."""
-        return self._get_metadata().copy()
+        """Get metadata for all files by walking the root directory."""
+        with suspend():
+            result = {}
+            for item in self.root.rglob("*"):
+                if not item.is_file():
+                    continue
+                rel_path = str(item.relative_to(self.root))
+                st = item.stat()
+                result[rel_path] = FileMetadata(
+                    size=st.st_size,
+                    created_at=datetime.fromtimestamp(
+                        st.st_ctime, tz=timezone.utc
+                    ).isoformat(),
+                    modified_at=datetime.fromtimestamp(
+                        st.st_mtime, tz=timezone.utc
+                    ).isoformat(),
+                )
+            return result
 
     # VirtualFS-compatible aliases for AgentAwareFS
 
@@ -607,8 +515,6 @@ class IsolatedFS:
 
             result = []
             items = resolved.rglob("*") if recursive else resolved.iterdir()
-
-            from datetime import datetime, timezone
 
             for item in items:
                 rel_path = str(item.relative_to(self.root))

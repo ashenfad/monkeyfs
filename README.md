@@ -36,7 +36,7 @@ Restricts file operations to a root directory on the real filesystem:
 ```python
 from monkeyfs import IsolatedFS, patch
 
-isolated = IsolatedFS(root="/tmp/sandbox", state={})
+isolated = IsolatedFS(root="/tmp/sandbox")
 
 with patch(isolated):
     with open("notes.txt", "w") as f:

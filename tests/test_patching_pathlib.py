@@ -29,7 +29,7 @@ class TestPathlibIntegration:
         root.mkdir()
         (root / "test.txt").write_text("isolated content")
 
-        fs = IsolatedFS(root=str(root), state={})
+        fs = IsolatedFS(root=str(root))
 
         with patch(fs):
             p = Path("test.txt")
@@ -66,7 +66,7 @@ class TestPathlibIntegration:
         (root / "subdir").mkdir()
         (root / "subdir" / "file2.txt").touch()
 
-        fs = IsolatedFS(root=str(root), state={})
+        fs = IsolatedFS(root=str(root))
 
         with patch(fs):
             # List root
@@ -120,7 +120,7 @@ class TestPathlibIntegration:
         root.mkdir()
         (root / "stat_test.txt").write_text("content")
 
-        fs = IsolatedFS(root=str(root), state={})
+        fs = IsolatedFS(root=str(root))
 
         with patch(fs):
             p = Path("stat_test.txt")
@@ -142,7 +142,7 @@ class TestPathlibIntegration:
         root = tmp_path / "root"
         root.mkdir()
 
-        fs = IsolatedFS(root=str(root), state={})
+        fs = IsolatedFS(root=str(root))
 
         with patch(fs):
             # Create file
@@ -228,7 +228,7 @@ class TestPathlibIntegration:
         # Test IsolatedFS
         root = tmp_path / "root"
         root.mkdir()
-        fs = IsolatedFS(root=str(root), state={})
+        fs = IsolatedFS(root=str(root))
         with patch(fs):
             assert os.getcwd() == "/"
             assert str(Path(".").resolve()) == "/"
