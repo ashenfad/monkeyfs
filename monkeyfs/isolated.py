@@ -14,7 +14,7 @@ from typing import Any
 
 from collections.abc import MutableMapping
 
-from .context import suspend_fs_interception
+from .context import suspend
 
 from .base import FileInfo, FileMetadata
 
@@ -45,7 +45,7 @@ class IsolatedFS:
             ValueError: If root is not an absolute path or doesn't exist.
         """
         # Suspend interception during init to ensure real verify works even if VFS active
-        with suspend_fs_interception():
+        with suspend():
             root_path = Path(root)
             if not root_path.is_absolute():
                 raise ValueError(f"Root must be absolute path: {root}")
@@ -81,7 +81,7 @@ class IsolatedFS:
         """
         resolved_virtual = self.resolve_path(path)
         real_path = self._validate_path(resolved_virtual)
-        with suspend_fs_interception():
+        with suspend():
             if not real_path.is_dir():
                 raise FileNotFoundError(f"No such directory: '{path}'")
         self._state[self.CWD_KEY] = (
@@ -90,7 +90,7 @@ class IsolatedFS:
 
     def glob(self, pattern: str) -> list[str]:
         """Return list of paths matching a glob pattern."""
-        with suspend_fs_interception():
+        with suspend():
             # Handle absolute/relative patterns
             if pattern.startswith("/"):
                 # Absolute pattern: treat as relative to root
@@ -161,7 +161,7 @@ class IsolatedFS:
         Raises:
             PermissionError: If path escapes root directory.
         """
-        with suspend_fs_interception():
+        with suspend():
             path_str = str(path)
 
             # For relative paths, prepend the CWD (but don't normalize yet)
@@ -213,7 +213,7 @@ class IsolatedFS:
         Raises:
             PermissionError: If path escapes root directory.
         """
-        with suspend_fs_interception():
+        with suspend():
             path_str = str(path)
 
             # Resolve relative paths against CWD
@@ -328,7 +328,7 @@ class IsolatedFS:
             FileNotFoundError: If file doesn't exist (read mode).
         """
         # Suspend for the whole operation including validation and opening
-        with suspend_fs_interception():
+        with suspend():
             resolved = self._validate_path(path)
 
             # Open the file calling io.open to be extra safe
@@ -341,7 +341,7 @@ class IsolatedFS:
 
                 def tracked_close():
                     # Need to check exists/stat which also need suspension
-                    with suspend_fs_interception():
+                    with suspend():
                         original_close()
                         if resolved.exists():
                             # Note: self._update_file_metadata calls _validate_path which suspends,
@@ -354,7 +354,7 @@ class IsolatedFS:
 
     def read(self, path: str) -> bytes:
         """Read entire file as bytes."""
-        with suspend_fs_interception():
+        with suspend():
             resolved = self._validate_path(path)
             return resolved.read_bytes()
 
@@ -366,7 +366,7 @@ class IsolatedFS:
             content: Bytes to write.
             mode: Write mode ('w' for write, 'a' for append).
         """
-        with suspend_fs_interception():
+        with suspend():
             resolved = self._validate_path(path)
             resolved.parent.mkdir(parents=True, exist_ok=True)
 
@@ -380,25 +380,25 @@ class IsolatedFS:
 
     def exists(self, path: str) -> bool:
         """Check if path exists."""
-        with suspend_fs_interception():
+        with suspend():
             resolved = self._validate_path(path)
             return resolved.exists()
 
     def isfile(self, path: str) -> bool:
         """Check if path is a file."""
-        with suspend_fs_interception():
+        with suspend():
             resolved = self._validate_path(path)
             return resolved.is_file()
 
     def isdir(self, path: str) -> bool:
         """Check if path is a directory."""
-        with suspend_fs_interception():
+        with suspend():
             resolved = self._validate_path(path)
             return resolved.is_dir()
 
     def islink(self, path: str) -> bool:
         """Check if path is a symbolic link."""
-        with suspend_fs_interception():
+        with suspend():
             try:
                 unresolved = self._validate_path_no_follow(path)
                 return unresolved.is_symlink()
@@ -407,7 +407,7 @@ class IsolatedFS:
 
     def lexists(self, path: str) -> bool:
         """Check if path exists (without following symlinks)."""
-        with suspend_fs_interception():
+        with suspend():
             try:
                 unresolved = self._validate_path_no_follow(path)
                 return unresolved.exists() or unresolved.is_symlink()
@@ -416,14 +416,14 @@ class IsolatedFS:
 
     def samefile(self, path1: str, path2: str) -> bool:
         """Check if two paths refer to the same file."""
-        with suspend_fs_interception():
+        with suspend():
             r1 = self._validate_path(path1)
             r2 = self._validate_path(path2)
             return r1.resolve() == r2.resolve()
 
     def realpath(self, path: str) -> str:
         """Return the canonical path."""
-        with suspend_fs_interception():
+        with suspend():
             resolved = self._validate_path(path)
             # Return path relative to the root, as if root was /
             return "/" + str(resolved.relative_to(self.root)).lstrip("/")
@@ -435,7 +435,7 @@ class IsolatedFS:
             path: Directory path to list.
             recursive: If True, list all nested files and directories.
         """
-        with suspend_fs_interception():
+        with suspend():
             resolved = self._validate_path(path)
             if not resolved.is_dir():
                 raise NotADirectoryError(f"Not a directory: {path}")
@@ -450,7 +450,7 @@ class IsolatedFS:
 
     def remove(self, path: str) -> None:
         """Remove a file."""
-        with suspend_fs_interception():
+        with suspend():
             resolved = self._validate_path(path)
             if resolved.is_dir():
                 raise IsADirectoryError(f"Is a directory: {path}")
@@ -459,19 +459,19 @@ class IsolatedFS:
 
     def mkdir(self, path: str, parents: bool = False, exist_ok: bool = False) -> None:
         """Create a directory."""
-        with suspend_fs_interception():
+        with suspend():
             resolved = self._validate_path(path)
             resolved.mkdir(parents=parents, exist_ok=exist_ok)
 
     def rmdir(self, path: str) -> None:
         """Remove an empty directory."""
-        with suspend_fs_interception():
+        with suspend():
             resolved = self._validate_path(path)
             resolved.rmdir()
 
     def rename(self, src: str, dst: str) -> None:
         """Rename/move a file or directory."""
-        with suspend_fs_interception():
+        with suspend():
             src_resolved = self._validate_path(src)
             dst_resolved = self._validate_path(dst)
 
@@ -490,25 +490,25 @@ class IsolatedFS:
 
     def chmod(self, path: str, mode: int) -> None:
         """Change file mode bits."""
-        with suspend_fs_interception():
+        with suspend():
             resolved = self._validate_path(path)
             resolved.chmod(mode)
 
     def chown(self, path: str, uid: int, gid: int) -> None:
         """Change file owner and group."""
-        with suspend_fs_interception():
+        with suspend():
             resolved = self._validate_path(path)
             os.chown(resolved, uid, gid)
 
     def access(self, path: str, mode: int) -> bool:
         """Check file access permissions."""
-        with suspend_fs_interception():
+        with suspend():
             resolved = self._validate_path(path)
             return os.access(resolved, mode)
 
     def readlink(self, path: str) -> str:
         """Read a symbolic link target."""
-        with suspend_fs_interception():
+        with suspend():
             unresolved = self._validate_path_no_follow(path)
             target = os.readlink(unresolved)
             # Validate target stays within root
@@ -524,7 +524,7 @@ class IsolatedFS:
 
     def symlink(self, src: str, dst: str) -> None:
         """Create a symbolic link."""
-        with suspend_fs_interception():
+        with suspend():
             dst_resolved = self._validate_path(dst)
             # src is the target — validate it stays within root
             src_resolved = self._validate_path(src)
@@ -532,21 +532,21 @@ class IsolatedFS:
 
     def link(self, src: str, dst: str) -> None:
         """Create a hard link."""
-        with suspend_fs_interception():
+        with suspend():
             src_resolved = self._validate_path(src)
             dst_resolved = self._validate_path(dst)
             dst_resolved.hardlink_to(src_resolved)
 
     def truncate(self, path: str, length: int) -> None:
         """Truncate file to given length."""
-        with suspend_fs_interception():
+        with suspend():
             resolved = self._validate_path(path)
             os.truncate(resolved, length)
             self._update_file_metadata(path, length)
 
     def stat(self, path: str) -> FileMetadata:
         """Get file metadata."""
-        with suspend_fs_interception():
+        with suspend():
             resolved = self._validate_path(path)
             if not resolved.exists():
                 raise FileNotFoundError(f"No such file: {path}")
@@ -599,7 +599,7 @@ class IsolatedFS:
             path: Directory path to list.
             recursive: If True, list all nested items.
         """
-        with suspend_fs_interception():
+        with suspend():
             resolved = self._validate_path(path)
 
             if not resolved.is_dir():
