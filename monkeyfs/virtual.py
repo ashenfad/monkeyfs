@@ -672,6 +672,25 @@ class VirtualFS:
                 else:
                     results.add(remainder)  # File
 
+        # Include explicit directories from metadata
+        metadata = self._get_metadata()
+        for dir_path, meta in metadata.items():
+            if not meta.is_dir:
+                continue
+            dir_path = dir_path.lstrip("/")
+            if path and not dir_path.startswith(path):
+                continue
+            remainder = dir_path[len(path):]
+            if not remainder:
+                continue
+            if recursive:
+                parts = remainder.split("/")
+                for i in range(1, len(parts) + 1):
+                    results.add("/".join(parts[:i]))
+            else:
+                child = remainder.split("/")[0]
+                results.add(child)
+
         return sorted(results)
 
     def exists(self, path: str) -> bool:
