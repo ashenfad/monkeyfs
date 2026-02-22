@@ -866,7 +866,7 @@ class VirtualFS:
         self._dir_cache = None
         self._current_size = None  # Will be recomputed on next access
 
-    def mkdir(self, path: str, exist_ok: bool = True, parents: bool = False) -> None:
+    def mkdir(self, path: str, parents: bool = False, exist_ok: bool = False) -> None:
         """Create a directory.
 
         Args:
