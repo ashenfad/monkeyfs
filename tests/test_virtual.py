@@ -48,6 +48,19 @@ class TestVirtualFSBasics:
         files = vfs.list("data")
         assert sorted(files) == ["file1.csv", "file2.csv"]
 
+    def test_list_nonexistent_raises(self):
+        """Test listing a nonexistent directory raises FileNotFoundError."""
+        vfs = VirtualFS({})
+        with pytest.raises(FileNotFoundError):
+            vfs.list("nope")
+
+    def test_list_file_raises(self):
+        """Test listing a file raises NotADirectoryError."""
+        vfs = VirtualFS({})
+        vfs.write("file.txt", b"data")
+        with pytest.raises(NotADirectoryError):
+            vfs.list("file.txt")
+
     def test_exists(self):
         """Test checking file existence."""
         vfs = VirtualFS({})

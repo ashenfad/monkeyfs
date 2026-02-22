@@ -152,6 +152,20 @@ class TestIsolatedOpen:
         # File should be closed and content persisted
         assert fs.read("ctx.txt") == b"context"
 
+    def test_open_write_creates_parents(self, tmp_path):
+        """Test that open in write mode creates parent directories."""
+        fs = IsolatedFS(str(tmp_path))
+        with fs.open("a/b/c.txt", "w") as f:
+            f.write("deep")
+        assert fs.read("a/b/c.txt") == b"deep"
+
+    def test_open_append_creates_parents(self, tmp_path):
+        """Test that open in append mode creates parent directories."""
+        fs = IsolatedFS(str(tmp_path))
+        with fs.open("x/y/z.txt", "a") as f:
+            f.write("appended")
+        assert fs.read("x/y/z.txt") == b"appended"
+
 
 # ---------------------------------------------------------------------------
 # Existence and type
@@ -343,6 +357,20 @@ class TestIsolatedListdir:
         assert "a.txt" in result
         assert "sub" in result
         assert os.path.join("sub", "b.txt") in result
+
+
+    def test_list_nonexistent_raises(self, tmp_path):
+        """Test listing a nonexistent directory raises FileNotFoundError."""
+        fs = IsolatedFS(str(tmp_path))
+        with pytest.raises(FileNotFoundError):
+            fs.list("nope")
+
+    def test_list_file_raises(self, tmp_path):
+        """Test listing a file raises NotADirectoryError."""
+        fs = IsolatedFS(str(tmp_path))
+        fs.write("file.txt", b"data")
+        with pytest.raises(NotADirectoryError):
+            fs.list("file.txt")
 
 
 # ---------------------------------------------------------------------------
@@ -644,5 +672,18 @@ class TestIsolatedOptionalMethods:
         fs.write("a.txt", b"aaa")
         fs.write("b.txt", b"bb")
         snapshot = fs.get_metadata_snapshot()
-        assert len(snapshot) == 2
+        assert "a.txt" in snapshot
+        assert "b.txt" in snapshot
         assert all(isinstance(v, FileMetadata) for v in snapshot.values())
+
+    def test_get_metadata_snapshot_includes_directories(self, tmp_path):
+        """Test get_metadata_snapshot includes directories with is_dir=True."""
+        fs = IsolatedFS(str(tmp_path))
+        fs.mkdir("subdir")
+        fs.write("subdir/file.txt", b"data")
+        snapshot = fs.get_metadata_snapshot()
+        assert "subdir" in snapshot
+        assert snapshot["subdir"].is_dir is True
+        assert snapshot["subdir"].size == 0
+        assert os.path.join("subdir", "file.txt") in snapshot
+        assert snapshot[os.path.join("subdir", "file.txt")].is_dir is False

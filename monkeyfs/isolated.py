@@ -342,8 +342,10 @@ class IsolatedFS:
         """
         with suspend():
             resolved = self._validate_path(path)
+            if not resolved.exists():
+                raise FileNotFoundError(f"No such directory: '{path}'")
             if not resolved.is_dir():
-                raise NotADirectoryError(f"Not a directory: {path}")
+                raise NotADirectoryError(f"Not a directory: '{path}'")
 
             if recursive:
                 results = []
