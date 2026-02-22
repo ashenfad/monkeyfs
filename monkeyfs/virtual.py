@@ -625,6 +625,12 @@ class VirtualFS:
         Returns:
             List of file/directory names in the directory.
         """
+        # Validate before resolving (isfile/isdir resolve internally)
+        if self.isfile(path):
+            raise NotADirectoryError(f"Not a directory: '{path}'")
+        if not self.isdir(path):
+            raise FileNotFoundError(f"No such directory: '{path}'")
+
         # Resolve path against CWD first, then normalize
         path = self.resolve_path(path)
 
