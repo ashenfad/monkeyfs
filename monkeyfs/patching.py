@@ -713,11 +713,11 @@ def _vfs_flock(fd: int, operation: int) -> None:
     return _originals["flock"](fd, operation)
 
 
-def _vfs_lockf(fd: int, cmd: int, len: int = 0, start: int = 0, whence: int = 0) -> Any:
+def _vfs_lockf(fd: int, cmd: int, length: int = 0, start: int = 0, whence: int = 0) -> Any:
     """FileSystem-aware fcntl.lockf() replacement — no-op under VFS."""
     if current_fs.get() is not None:
         return None
-    return _originals["lockf"](fd, cmd, len, start, whence)
+    return _originals["lockf"](fd, cmd, length, start, whence)
 
 
 def _vfs_touch(self: Path, mode: int = 0o666, exist_ok: bool = True) -> None:
