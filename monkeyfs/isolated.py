@@ -510,38 +510,26 @@ class IsolatedFS:
             result = []
             items = resolved.rglob("*") if recursive else resolved.iterdir()
 
+            from datetime import datetime, timezone
+
             for item in items:
                 rel_path = str(item.relative_to(self.root))
+                stat_info = item.stat()
 
-                if item.is_file():
-                    stat_info = item.stat()
-                    from datetime import datetime, timezone
-
-                    result.append(
-                        FileInfo(
-                            name=item.name,
-                            path=rel_path,
-                            is_dir=False,
-                            size=stat_info.st_size,
-                            created_at=datetime.fromtimestamp(
-                                stat_info.st_ctime, tz=timezone.utc
-                            ).isoformat(),
-                            modified_at=datetime.fromtimestamp(
-                                stat_info.st_mtime, tz=timezone.utc
-                            ).isoformat(),
-                        )
+                result.append(
+                    FileInfo(
+                        name=item.name,
+                        path=rel_path,
+                        is_dir=item.is_dir(),
+                        size=stat_info.st_size if item.is_file() else 0,
+                        created_at=datetime.fromtimestamp(
+                            stat_info.st_ctime, tz=timezone.utc
+                        ).isoformat(),
+                        modified_at=datetime.fromtimestamp(
+                            stat_info.st_mtime, tz=timezone.utc
+                        ).isoformat(),
                     )
-                else:
-                    result.append(
-                        FileInfo(
-                            name=item.name,
-                            path=rel_path,
-                            is_dir=True,
-                            size=0,
-                            created_at="",
-                            modified_at="",
-                        )
-                    )
+                )
 
         return sorted(result, key=lambda x: x.path)
 
