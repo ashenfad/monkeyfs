@@ -7,7 +7,6 @@ Patches `open()`, `os.listdir()`, `os.stat()`, and 30+ other stdlib functions to
 ## Features
 
 - **VirtualFS** -- virtual filesystem backed by any `MutableMapping[str, bytes]` (dict, database, etc.) with metadata tracking
-- **MemoryFS** -- lightweight in-memory filesystem using plain dicts (`str | bytes` values)
 - **IsolatedFS** -- real filesystem restricted to a root directory with path-escape prevention
 - **Transparent patching** -- `open()`, `os.*`, `os.path.*`, `pathlib.Path` all intercepted automatically
 - **Async-safe** -- each async task gets its own filesystem context via `contextvars`

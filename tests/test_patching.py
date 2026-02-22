@@ -518,106 +518,86 @@ class TestPartialProtocol:
                 os.truncate("test.txt", 0)
 
 
-class TestOptionalMethodsMemoryFS:
-    """Test optional methods work through patching with MemoryFS."""
+class TestOptionalMethods:
+    """Test optional methods work through patching with VirtualFS."""
 
     def test_replace(self):
-        from monkeyfs import MemoryFS
-
-        fs = MemoryFS()
-        fs.files["/a.txt"] = b"data"
+        fs = VirtualFS({})
+        fs.write("a.txt", b"data")
 
         with use_fs(fs):
             os.replace("a.txt", "b.txt")
 
-        assert "/b.txt" in fs.files
-        assert "/a.txt" not in fs.files
+        assert fs.isfile("b.txt")
+        assert not fs.isfile("a.txt")
 
     def test_access(self):
-        from monkeyfs import MemoryFS
-
-        fs = MemoryFS()
-        fs.files["/a.txt"] = b"data"
+        fs = VirtualFS({})
+        fs.write("a.txt", b"data")
 
         with use_fs(fs):
             assert os.access("a.txt", os.R_OK) is True
             assert os.access("missing.txt", os.R_OK) is False
 
     def test_readlink_raises(self):
-        from monkeyfs import MemoryFS
-
-        fs = MemoryFS()
-        fs.files["/a.txt"] = b"data"
+        fs = VirtualFS({})
+        fs.write("a.txt", b"data")
 
         with use_fs(fs):
             with pytest.raises(OSError):
                 os.readlink("a.txt")
 
     def test_symlink_raises(self):
-        from monkeyfs import MemoryFS
-
-        fs = MemoryFS()
+        fs = VirtualFS({})
 
         with use_fs(fs):
             with pytest.raises(OSError):
                 os.symlink("target", "link")
 
     def test_link(self):
-        from monkeyfs import MemoryFS
-
-        fs = MemoryFS()
-        fs.files["/a.txt"] = b"data"
+        fs = VirtualFS({})
+        fs.write("a.txt", b"data")
 
         with use_fs(fs):
             os.link("a.txt", "b.txt")
 
-        assert fs.files["/b.txt"] == b"data"
+        assert fs.read("b.txt") == b"data"
 
     def test_chmod_noop(self):
-        from monkeyfs import MemoryFS
-
-        fs = MemoryFS()
-        fs.files["/a.txt"] = b"data"
+        fs = VirtualFS({})
+        fs.write("a.txt", b"data")
 
         with use_fs(fs):
             os.chmod("a.txt", 0o755)  # should not raise
 
     def test_chmod_missing_file(self):
-        from monkeyfs import MemoryFS
-
-        fs = MemoryFS()
+        fs = VirtualFS({})
 
         with use_fs(fs):
             with pytest.raises(FileNotFoundError):
                 os.chmod("missing.txt", 0o755)
 
     def test_chown_noop(self):
-        from monkeyfs import MemoryFS
-
         if not hasattr(os, "chown"):
             pytest.skip("os.chown not available on this platform")
 
-        fs = MemoryFS()
-        fs.files["/a.txt"] = b"data"
+        fs = VirtualFS({})
+        fs.write("a.txt", b"data")
 
         with use_fs(fs):
             os.chown("a.txt", 1000, 1000)  # should not raise
 
     def test_truncate(self):
-        from monkeyfs import MemoryFS
-
-        fs = MemoryFS()
-        fs.files["/a.txt"] = b"hello world"
+        fs = VirtualFS({})
+        fs.write("a.txt", b"hello world")
 
         with use_fs(fs):
             os.truncate("a.txt", 5)
 
-        assert fs.files["/a.txt"] == b"hello"
+        assert fs.read("a.txt") == b"hello"
 
     def test_truncate_missing_file(self):
-        from monkeyfs import MemoryFS
-
-        fs = MemoryFS()
+        fs = VirtualFS({})
 
         with use_fs(fs):
             with pytest.raises(FileNotFoundError):
@@ -743,35 +723,31 @@ class TestShutilFlagDisabling:
 
         assert vfs.read("dst.txt") == b"copy me"
 
-    def test_shutil_copy_works_with_memoryfs(self):
-        """shutil.copy (includes chmod) should work with MemoryFS."""
+    def test_shutil_copy_works_with_chmod(self):
+        """shutil.copy (includes chmod) should work with VirtualFS."""
         import shutil
 
-        from monkeyfs import MemoryFS
-
-        fs = MemoryFS()
-        fs.files["/src.txt"] = b"copy me"
+        fs = VirtualFS({})
+        fs.write("src.txt", b"copy me")
 
         with use_fs(fs):
             shutil.copy("src.txt", "dst.txt")
 
-        assert fs.files["/dst.txt"] == b"copy me"
+        assert fs.read("dst.txt") == b"copy me"
 
     def test_shutil_rmtree_works_in_context(self):
         """shutil.rmtree should work through patched functions inside use_fs()."""
         import shutil
 
-        from monkeyfs import MemoryFS
-
-        fs = MemoryFS()
+        fs = VirtualFS({})
         fs.write("/mydir/a.txt", b"aaa")
         fs.write("/mydir/b.txt", b"bbb")
 
         with use_fs(fs):
             shutil.rmtree("mydir")
 
-        assert "/mydir/a.txt" not in fs.files
-        assert "/mydir/b.txt" not in fs.files
+        assert not fs.isfile("mydir/a.txt")
+        assert not fs.isfile("mydir/b.txt")
 
 
 class TestTransitiveCoverage:
@@ -843,9 +819,7 @@ class TestTransitiveCoverage:
 
     def test_os_removedirs(self):
         """os.removedirs should work through patched os.rmdir."""
-        from monkeyfs import MemoryFS
-
-        fs = MemoryFS()
+        fs = VirtualFS({})
         fs.mkdir("/a")
         fs.mkdir("/a/b")
         fs.mkdir("/a/b/c")
@@ -853,7 +827,7 @@ class TestTransitiveCoverage:
         with use_fs(fs):
             os.removedirs("a/b/c")
 
-        assert "/a/b/c" not in fs.dirs
+        assert not fs.isdir("a/b/c")
 
 
 class TestFcntlPatching:

@@ -480,6 +480,15 @@ class VirtualFS:
             if "x" in mode and self.exists(path):
                 raise FileExistsError(f"[Errno 17] File exists: '{path}'")
 
+            # Validate parent directory exists (POSIX: open() fails with ENOENT)
+            resolved = self.resolve_path(path)
+            normalized = self._normalize_path(resolved)
+            parent = "/".join(normalized.split("/")[:-1])
+            if parent and not self.isdir("/" + parent):
+                raise FileNotFoundError(
+                    f"No such file or directory: '{path}'"
+                )
+
             return VirtualFile(self, self._state, key, path, mode)
 
         else:
@@ -878,18 +887,31 @@ class VirtualFS:
         if hasattr(self._state, "commit"):
             self._state.commit()
 
-    def mkdir(self, path: str, exist_ok: bool = True) -> None:
+    def mkdir(self, path: str, exist_ok: bool = True, parents: bool = False) -> None:
         """Create a directory.
 
         Args:
             path: Directory path.
             exist_ok: If True, don't raise if directory exists.
+            parents: If True, create parent directories as needed.
 
         Raises:
             FileExistsError: If path exists (as file or dir when exist_ok=False).
+            FileNotFoundError: If parent doesn't exist and parents=False.
         """
+        if parents:
+            self.makedirs(path, exist_ok=exist_ok)
+            return
+
         path = self.resolve_path(path)
         normalized = self._normalize_path(path)
+
+        # Validate parent exists
+        parent = "/".join(normalized.split("/")[:-1])
+        if parent and not self.isdir("/" + parent):
+            raise FileNotFoundError(
+                f"No such file or directory: '{path}'"
+            )
 
         # Check if already exists
         if self.isfile(path):
@@ -969,52 +991,133 @@ class VirtualFS:
         self._dir_cache = None
 
     def rename(self, src: str, dst: str) -> None:
-        """Rename/move a file.
+        """Rename/move a file or directory.
 
         Args:
-            src: Source file path.
-            dst: Destination file path.
+            src: Source path (file or directory).
+            dst: Destination path.
 
         Raises:
             FileNotFoundError: If source doesn't exist.
         """
-        content = self.read(src)
+        src_resolved = self.resolve_path(src)
+        dst_resolved = self.resolve_path(dst)
+        src_norm = self._normalize_path(src_resolved)
+        dst_norm = self._normalize_path(dst_resolved)
 
-        # Normalize paths for metadata lookups (metadata keys are normalized)
-        src_norm = self._normalize_path(self.resolve_path(src))
-        dst_norm = self._normalize_path(self.resolve_path(dst))
-
-        # Preserve source file's metadata (especially created_at)
-        metadata = self._get_metadata()
-        src_meta = metadata.get(src_norm)
-
-        # Defer snapshots for intermediate operations
-        token = vfs_defer_snapshots.set(True)
-        try:
-            # Write destination (this will create new metadata and invalidate dir_cache)
-            self.write(dst, content)
-
-            # Reload metadata (write() modified it)
+        if self.isfile(src):
+            # File rename
+            content = self.read(src)
             metadata = self._get_metadata()
+            src_meta = metadata.get(src_norm)
 
-            # If source had metadata, preserve its created_at
-            if src_meta:
-                dst_meta = metadata[dst_norm]  # write() created this
-                metadata[dst_norm] = FileMetadata(
-                    size=dst_meta.size,
-                    created_at=src_meta.created_at,  # Preserve original
-                    modified_at=dst_meta.modified_at,  # Use current time
-                )
+            token = vfs_defer_snapshots.set(True)
+            try:
+                self.write(dst, content)
+
+                # Preserve created_at from source
+                metadata = self._get_metadata()
+                if src_meta:
+                    dst_meta = metadata[dst_norm]
+                    metadata[dst_norm] = FileMetadata(
+                        size=dst_meta.size,
+                        created_at=src_meta.created_at,
+                        modified_at=dst_meta.modified_at,
+                    )
+                    self._set_metadata(metadata)
+
+                self.remove(src)
+            finally:
+                vfs_defer_snapshots.reset(token)
+
+        elif self.isdir(src):
+            # Directory rename — move all children
+            src_prefix = src_norm.rstrip("/") + "/"
+            dst_prefix = dst_norm.rstrip("/") + "/"
+
+            # Collect all files under src
+            files_to_move = []
+            for key in list(self._state.keys()):
+                if not self._is_vfs_key(key):
+                    continue
+                if key == self.METADATA_KEY or key == self.CWD_KEY:
+                    continue
+                file_path = self._decode_path(key).lstrip("/")
+                if file_path == src_norm or file_path.startswith(src_prefix):
+                    files_to_move.append((key, file_path))
+
+            token = vfs_defer_snapshots.set(True)
+            try:
+                metadata = self._get_metadata()
+                for key, file_path in files_to_move:
+                    # Compute new path
+                    rel = file_path[len(src_norm):]
+                    new_path = dst_norm + rel
+                    new_key = self._encode_path("/" + new_path)
+
+                    # Move content
+                    self._state[new_key] = self._state.pop(key)
+
+                    # Move metadata
+                    if file_path in metadata:
+                        metadata[new_path] = metadata.pop(file_path)
+
+                # Move directory metadata entries
+                dir_keys_to_move = [
+                    k for k in metadata
+                    if k == src_norm or k.startswith(src_prefix)
+                ]
+                for k in dir_keys_to_move:
+                    rel = k[len(src_norm):]
+                    metadata[dst_norm + rel] = metadata.pop(k)
+
                 self._set_metadata(metadata)
+                self._dir_cache = None
+            finally:
+                vfs_defer_snapshots.reset(token)
+        else:
+            raise FileNotFoundError(src)
 
-            # Remove source (this removes source metadata and invalidates dir_cache again)
-            self.remove(src)
-        finally:
-            vfs_defer_snapshots.reset(token)
-
-        # Snapshot once at the end if not deferred
         if not vfs_defer_snapshots.get() and hasattr(self._state, "commit"):
             self._state.commit()
+
+    def replace(self, src: str, dst: str) -> None:
+        """Replace dst with src (alias for rename)."""
+        self.rename(src, dst)
+
+    def readlink(self, path: str) -> str:
+        """Read a symbolic link (not supported in VFS)."""
+        import errno
+        raise OSError(errno.EINVAL, "Not a symbolic link", path)
+
+    def symlink(self, src: str, dst: str) -> None:
+        """Create a symbolic link (not supported in VFS)."""
+        import errno
+        raise OSError(errno.EPERM, "VirtualFS does not support symlinks")
+
+    def chmod(self, path: str, mode: int) -> None:
+        """Change file mode (no-op for VFS)."""
+        if not self.exists(path):
+            raise FileNotFoundError(f"No such file or directory: {path}")
+
+    def chown(self, path: str, uid: int, gid: int) -> None:
+        """Change file owner (no-op for VFS)."""
+        if not self.exists(path):
+            raise FileNotFoundError(f"No such file or directory: {path}")
+
+    def access(self, path: str, mode: int) -> bool:
+        """Check file access (returns exists() for VFS)."""
+        return self.exists(path)
+
+    def link(self, src: str, dst: str) -> None:
+        """Create a hard link (copies content in VFS)."""
+        content = self.read(src)
+        self.write(dst, content)
+
+    def truncate(self, path: str, length: int) -> None:
+        """Truncate file to given length."""
+        content = self.read(path)
+        self.write(path, content[:length])
 
     def stat(self, path: str) -> FileMetadata:
         """Get metadata for a specific file or directory.
