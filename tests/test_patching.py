@@ -424,6 +424,162 @@ class TestPartialProtocol:
             with pytest.raises(NotImplementedError, match="getsize"):
                 os.path.getsize("test.txt")
 
+    def test_replace_raises_not_implemented(self):
+        fs = self._make_minimal_fs()
+        with use_fs(fs):
+            with pytest.raises(NotImplementedError, match="replace"):
+                os.replace("test.txt", "other.txt")
+
+    def test_access_raises_not_implemented(self):
+        fs = self._make_minimal_fs()
+        with use_fs(fs):
+            with pytest.raises(NotImplementedError, match="access"):
+                os.access("test.txt", os.R_OK)
+
+    def test_readlink_raises_not_implemented(self):
+        fs = self._make_minimal_fs()
+        with use_fs(fs):
+            with pytest.raises(NotImplementedError, match="readlink"):
+                os.readlink("test.txt")
+
+    def test_symlink_raises_not_implemented(self):
+        fs = self._make_minimal_fs()
+        with use_fs(fs):
+            with pytest.raises(NotImplementedError, match="symlink"):
+                os.symlink("test.txt", "link.txt")
+
+    def test_link_raises_not_implemented(self):
+        fs = self._make_minimal_fs()
+        with use_fs(fs):
+            with pytest.raises(NotImplementedError, match="link"):
+                os.link("test.txt", "copy.txt")
+
+    def test_chmod_raises_not_implemented(self):
+        fs = self._make_minimal_fs()
+        with use_fs(fs):
+            with pytest.raises(NotImplementedError, match="chmod"):
+                os.chmod("test.txt", 0o755)
+
+    def test_chown_raises_not_implemented(self):
+        fs = self._make_minimal_fs()
+        if not hasattr(os, "chown"):
+            pytest.skip("os.chown not available on this platform")
+        with use_fs(fs):
+            with pytest.raises(NotImplementedError, match="chown"):
+                os.chown("test.txt", 1000, 1000)
+
+    def test_truncate_raises_not_implemented(self):
+        fs = self._make_minimal_fs()
+        with use_fs(fs):
+            with pytest.raises(NotImplementedError, match="truncate"):
+                os.truncate("test.txt", 0)
+
+
+class TestOptionalMethodsMemoryFS:
+    """Test optional methods work through patching with MemoryFS."""
+
+    def test_replace(self):
+        from monkeyfs import MemoryFS
+
+        fs = MemoryFS()
+        fs.files["/a.txt"] = b"data"
+
+        with use_fs(fs):
+            os.replace("a.txt", "b.txt")
+
+        assert "/b.txt" in fs.files
+        assert "/a.txt" not in fs.files
+
+    def test_access(self):
+        from monkeyfs import MemoryFS
+
+        fs = MemoryFS()
+        fs.files["/a.txt"] = b"data"
+
+        with use_fs(fs):
+            assert os.access("a.txt", os.R_OK) is True
+            assert os.access("missing.txt", os.R_OK) is False
+
+    def test_readlink_raises(self):
+        from monkeyfs import MemoryFS
+
+        fs = MemoryFS()
+        fs.files["/a.txt"] = b"data"
+
+        with use_fs(fs):
+            with pytest.raises(OSError):
+                os.readlink("a.txt")
+
+    def test_symlink_raises(self):
+        from monkeyfs import MemoryFS
+
+        fs = MemoryFS()
+
+        with use_fs(fs):
+            with pytest.raises(OSError):
+                os.symlink("target", "link")
+
+    def test_link(self):
+        from monkeyfs import MemoryFS
+
+        fs = MemoryFS()
+        fs.files["/a.txt"] = b"data"
+
+        with use_fs(fs):
+            os.link("a.txt", "b.txt")
+
+        assert fs.files["/b.txt"] == b"data"
+
+    def test_chmod_noop(self):
+        from monkeyfs import MemoryFS
+
+        fs = MemoryFS()
+        fs.files["/a.txt"] = b"data"
+
+        with use_fs(fs):
+            os.chmod("a.txt", 0o755)  # should not raise
+
+    def test_chmod_missing_file(self):
+        from monkeyfs import MemoryFS
+
+        fs = MemoryFS()
+
+        with use_fs(fs):
+            with pytest.raises(FileNotFoundError):
+                os.chmod("missing.txt", 0o755)
+
+    def test_chown_noop(self):
+        from monkeyfs import MemoryFS
+
+        if not hasattr(os, "chown"):
+            pytest.skip("os.chown not available on this platform")
+
+        fs = MemoryFS()
+        fs.files["/a.txt"] = b"data"
+
+        with use_fs(fs):
+            os.chown("a.txt", 1000, 1000)  # should not raise
+
+    def test_truncate(self):
+        from monkeyfs import MemoryFS
+
+        fs = MemoryFS()
+        fs.files["/a.txt"] = b"hello world"
+
+        with use_fs(fs):
+            os.truncate("a.txt", 5)
+
+        assert fs.files["/a.txt"] == b"hello"
+
+    def test_truncate_missing_file(self):
+        from monkeyfs import MemoryFS
+
+        fs = MemoryFS()
+
+        with use_fs(fs):
+            with pytest.raises(FileNotFoundError):
+                os.truncate("missing.txt", 0)
+
 
 class TestIsolatedPatching:
     """Test patching with IsolatedFS."""

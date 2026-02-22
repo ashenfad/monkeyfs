@@ -85,6 +85,14 @@ islink(path) -> bool            # os.path.islink
 samefile(p1, p2) -> bool        # os.path.samefile
 realpath(path) -> str           # os.path.realpath
 getsize(path) -> int            # os.path.getsize
+replace(src, dst) -> None       # os.replace
+access(path, mode) -> bool      # os.access
+readlink(path) -> str           # os.readlink
+symlink(src, dst) -> None       # os.symlink
+link(src, dst) -> None          # os.link
+chmod(path, mode) -> None       # os.chmod
+chown(path, uid, gid) -> None   # os.chown
+truncate(path, length) -> None  # os.truncate
 ```
 
 ## Patched functions
@@ -92,7 +100,7 @@ getsize(path) -> int            # os.path.getsize
 | Module | Functions |
 |--------|-----------|
 | `builtins` | `open` |
-| `os` | `listdir`, `scandir`, `remove`, `unlink`, `mkdir`, `makedirs`, `rmdir`, `rename`, `stat`, `lstat`, `getcwd`, `chdir`, `utime`, `getenv` |
+| `os` | `listdir`, `scandir`, `remove`, `unlink`, `mkdir`, `makedirs`, `rmdir`, `rename`, `replace`, `stat`, `lstat`, `getcwd`, `chdir`, `utime`, `getenv`, `access`, `readlink`, `symlink`, `link`, `chmod`, `chown`, `truncate` |
 | `os.path` | `exists`, `isfile`, `isdir`, `islink`, `lexists`, `samefile`, `realpath`, `abspath`, `getsize`, `expanduser`, `expandvars` |
 | `pathlib` | `Path.touch` |
 

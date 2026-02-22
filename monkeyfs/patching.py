@@ -57,6 +57,14 @@ _originals: dict[str, Any] = {
     "expanduser": os.path.expanduser,
     "getenv": os.getenv,
     "expandvars": os.path.expandvars,
+    "replace": os.replace,
+    "access": os.access,
+    "readlink": os.readlink,
+    "symlink": os.symlink,
+    "link": os.link,
+    "chmod": os.chmod,
+    "truncate": os.truncate,
+    **({"chown": os.chown} if hasattr(os, "chown") else {}),
 }
 
 # Will be populated after wrapper functions are defined
@@ -601,6 +609,83 @@ def _vfs_utime(
     return _originals["utime"](path, times, **kwargs)
 
 
+def _vfs_replace(src: str, dst: str, **kwargs: Any) -> None:
+    """FileSystem-aware os.replace() replacement."""
+    fs = current_fs.get()
+    if fs is not None:
+        return _require(fs, "replace")(str(src), str(dst))
+    return _originals["replace"](src, dst, **kwargs)
+
+
+def _vfs_access(path: str, mode: int, **kwargs: Any) -> bool:
+    """FileSystem-aware os.access() replacement."""
+    fs = current_fs.get()
+    if fs is not None:
+        try:
+            return _require(fs, "access")(str(path), mode)
+        except (PermissionError, FileNotFoundError):
+            if _is_safe_system_path(path):
+                return _originals["access"](path, mode, **kwargs)
+            raise
+    return _originals["access"](path, mode, **kwargs)
+
+
+def _vfs_readlink(path: str, **kwargs: Any) -> str:
+    """FileSystem-aware os.readlink() replacement."""
+    if _in_safe_path_check.get():
+        return _originals["readlink"](path, **kwargs)
+
+    fs = current_fs.get()
+    if fs is not None:
+        try:
+            return _require(fs, "readlink")(str(path))
+        except (PermissionError, FileNotFoundError, OSError):
+            if _is_safe_system_path(path):
+                return _originals["readlink"](path, **kwargs)
+            raise
+    return _originals["readlink"](path, **kwargs)
+
+
+def _vfs_symlink(src: str, dst: str, *args: Any, **kwargs: Any) -> None:
+    """FileSystem-aware os.symlink() replacement."""
+    fs = current_fs.get()
+    if fs is not None:
+        return _require(fs, "symlink")(str(src), str(dst))
+    return _originals["symlink"](src, dst, *args, **kwargs)
+
+
+def _vfs_link(src: str, dst: str, **kwargs: Any) -> None:
+    """FileSystem-aware os.link() replacement."""
+    fs = current_fs.get()
+    if fs is not None:
+        return _require(fs, "link")(str(src), str(dst))
+    return _originals["link"](src, dst, **kwargs)
+
+
+def _vfs_chmod(path: str, mode: int, **kwargs: Any) -> None:
+    """FileSystem-aware os.chmod() replacement."""
+    fs = current_fs.get()
+    if fs is not None:
+        return _require(fs, "chmod")(str(path), mode)
+    return _originals["chmod"](path, mode, **kwargs)
+
+
+def _vfs_chown(path: str, uid: int, gid: int, **kwargs: Any) -> None:
+    """FileSystem-aware os.chown() replacement."""
+    fs = current_fs.get()
+    if fs is not None:
+        return _require(fs, "chown")(str(path), uid, gid)
+    return _originals["chown"](path, uid, gid, **kwargs)
+
+
+def _vfs_truncate(path: str, length: int) -> None:
+    """FileSystem-aware os.truncate() replacement."""
+    fs = current_fs.get()
+    if fs is not None:
+        return _require(fs, "truncate")(str(path), length)
+    return _originals["truncate"](path, length)
+
+
 def _vfs_touch(self: Path, mode: int = 0o666, exist_ok: bool = True) -> None:
     """FileSystem-aware pathlib.Path.touch() replacement."""
     if exist_ok:
@@ -656,6 +741,15 @@ def _install() -> None:
     os.getcwd = _vfs_getcwd  # type: ignore[assignment]
     os.chdir = _vfs_chdir  # type: ignore[assignment]
     os.utime = _vfs_utime  # type: ignore[assignment]
+    os.replace = _vfs_replace  # type: ignore[assignment]
+    os.access = _vfs_access  # type: ignore[assignment]
+    os.readlink = _vfs_readlink  # type: ignore[assignment]
+    os.symlink = _vfs_symlink  # type: ignore[assignment]
+    os.link = _vfs_link  # type: ignore[assignment]
+    os.chmod = _vfs_chmod  # type: ignore[assignment]
+    os.truncate = _vfs_truncate  # type: ignore[assignment]
+    if hasattr(os, "chown"):
+        os.chown = _vfs_chown  # type: ignore[assignment]
 
     # Patch pathlib.Path.touch
     Path.touch = _vfs_touch  # type: ignore[assignment]
@@ -702,6 +796,14 @@ def _install() -> None:
     _vfs_expanduser.__name__ = "expanduser"
     _vfs_getenv.__name__ = "getenv"
     _vfs_expandvars.__name__ = "expandvars"
+    _vfs_replace.__name__ = "replace"
+    _vfs_access.__name__ = "access"
+    _vfs_readlink.__name__ = "readlink"
+    _vfs_symlink.__name__ = "symlink"
+    _vfs_link.__name__ = "link"
+    _vfs_chmod.__name__ = "chmod"
+    _vfs_chown.__name__ = "chown"
+    _vfs_truncate.__name__ = "truncate"
 
     # Patch pathlib internal accessor (Python < 3.11, e.g. 3.10)
     if hasattr(pathlib, "_NormalAccessor"):
