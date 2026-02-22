@@ -50,6 +50,49 @@ class TestPatchingBasics:
 
         assert sorted(files) == ["file1.txt", "file2.txt"]
 
+    def test_scandir_patched(self):
+        """Test that os.scandir() is patched."""
+        vfs = VirtualFS({})
+
+        vfs.write("file.txt", b"hello")
+        vfs.write("sub/nested.txt", b"world")
+
+        with use_fs(vfs):
+            with os.scandir("/") as entries:
+                result = {e.name: e.is_dir() for e in entries}
+
+        assert result == {"file.txt": False, "sub": True}
+
+    def test_scandir_entry_stat(self):
+        """Test that scandir DirEntry.stat() works."""
+        vfs = VirtualFS({})
+
+        vfs.write("file.txt", b"12345")
+
+        with use_fs(vfs):
+            with os.scandir("/") as entries:
+                entry = next(iter(entries))
+                assert entry.name == "file.txt"
+                assert entry.stat().st_size == 5
+
+    def test_utime_patched(self):
+        """Test that os.utime() is patched (no-op for existing files)."""
+        vfs = VirtualFS({})
+
+        vfs.write("file.txt", b"content")
+
+        with use_fs(vfs):
+            # Should not raise for existing file
+            os.utime("file.txt", None)
+
+    def test_utime_missing_file(self):
+        """Test that os.utime() raises for missing files."""
+        vfs = VirtualFS({})
+
+        with use_fs(vfs):
+            with pytest.raises(FileNotFoundError):
+                os.utime("missing.txt", None)
+
     def test_exists_patched(self):
         """Test that os.path.exists() is patched."""
         vfs = VirtualFS({})

@@ -67,8 +67,6 @@ _originals: dict[str, Any] = {
     **({"chown": os.chown} if hasattr(os, "chown") else {}),
 }
 
-# Will be populated after wrapper functions are defined
-_vfs_wrappers: dict[Any, Any] = {}
 
 
 # Define safe system paths for read-only passthrough
@@ -874,26 +872,6 @@ def get_current_fs() -> Any | None:
     return current_fs.get()
 
 
-# Populate wrapper mapping (these are valid regardless of install() state
-# since they map original -> wrapper function references)
-_vfs_wrappers.update(
-    {
-        _originals["open"]: _vfs_open,
-        _originals["listdir"]: _vfs_listdir,
-        _originals["remove"]: _vfs_remove,
-        _originals["unlink"]: _vfs_unlink,
-        _originals["mkdir"]: _vfs_mkdir,
-        _originals["makedirs"]: _vfs_makedirs,
-        _originals["rename"]: _vfs_rename,
-        _originals["stat"]: _vfs_stat,
-        _originals["scandir"]: _vfs_scandir,
-        _originals["exists"]: _vfs_exists,
-        _originals["isfile"]: _vfs_isfile,
-        _originals["isdir"]: _vfs_isdir,
-        _originals["islink"]: _vfs_islink,
-        _originals["lexists"]: _vfs_lexists,
-        _originals["samefile"]: _vfs_samefile,
-        _originals["realpath"]: _vfs_realpath,
-        _originals["getsize"]: _vfs_getsize,
-    }
-)
+# Install patches at import time. They are inert when no filesystem
+# is active (current_fs is None) and activate when use_fs() sets one.
+install()
