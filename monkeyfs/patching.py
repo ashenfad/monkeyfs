@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .base import FileMetadata
-from .context import current_fs, _defer_commits
+from .context import current_fs
 
 
 # Store original implementations once at import
