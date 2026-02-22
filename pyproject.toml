@@ -1,0 +1,58 @@
+[project]
+name = "monkeyfs"
+version = "0.1.0"
+description = "Transparent filesystem interception via monkey-patching."
+readme = "README.md"
+license = "MIT"
+authors = [
+    {name = "ashenfad"},
+]
+keywords = ["filesystem", "monkey-patch", "sandbox", "vfs", "interception"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Filesystems",
+]
+requires-python = ">=3.10"
+
+dependencies = []
+
+[project.optional-dependencies]
+kv = ["gitkv"]
+dev = [
+    "ruff",
+    "pre-commit",
+    "pytest",
+    "pytest-timeout",
+]
+test = [
+    "pytest",
+    "pytest-timeout",
+]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+ignore = ["E731"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = {find = {where = ["./"], exclude = ["tests*"]}}
+
+[tool.setuptools.package-data]
+monkeyfs = ["py.typed"]
