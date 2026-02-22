@@ -1,6 +1,6 @@
 # monkeyfs 🐒
 
-Transparent filesystem interception via monkey-patching.
+Filesystem interception via monkey-patching.
 
 Patches `open()`, `os.listdir()`, `os.stat()`, and 30+ other stdlib functions to route through a virtual or isolated filesystem. Patches are installed at import time and are inert until activated with `patch()`. Uses `contextvars` for async-safe isolation between concurrent tasks. Zero dependencies.
 
