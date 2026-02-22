@@ -1,5 +1,13 @@
 # API Reference
 
+- [Context managers](#context-managers) -- `patch`, `suspend`, `defer_commits`
+- [Filesystem implementations](#filesystem-implementations) -- `VirtualFS`, `IsolatedFS`, `VirtualFile`
+- [Protocol & types](#protocol--types) -- `FileSystem`, `FileMetadata`, `FileInfo`
+- [Configuration](#configuration) -- `connect_fs`, config dataclasses
+- [Low-level](#low-level) -- `current_fs`
+- [Patched functions](#patched-functions)
+- [Known limitations](#known-limitations)
+
 ## Context managers
 
 ### `patch(fs)`
