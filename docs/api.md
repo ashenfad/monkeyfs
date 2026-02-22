@@ -108,6 +108,10 @@ chown(path, uid, gid) -> None   # os.chown
 truncate(path, length) -> None  # os.truncate
 ```
 
+### termish compatibility
+
+Both `VirtualFS` and `IsolatedFS` satisfy the [termish](https://github.com/ashenfad/termish) `FileSystem` protocol, which covers direct-use methods (`read`, `write`, `list_detailed`, `glob`, etc.) beyond the patching surface above. This means either can be passed directly to termish's terminal interpreter for shell command execution over the virtual filesystem.
+
 ### `FileMetadata`
 
 Dataclass returned by `stat()`. Fields: `size`, `created_at`, `modified_at`, `is_dir`. Also exposes `os.stat_result`-compatible properties (`st_size`, `st_mode`, `st_mtime`, etc.).
