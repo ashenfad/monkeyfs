@@ -29,14 +29,10 @@ class IsolatedFSConfig:
     Attributes:
         type: Always "isolated".
         root: Absolute path to root directory (all file operations restricted to this path).
-        tracking: Whether to track file changes and emit events (default: False).
-        per_session: Whether to create session subdirectories (default: False).
     """
 
     type: Literal["isolated"] = "isolated"
     root: str = ""
-    tracking: bool = False
-    per_session: bool = False
 
 
 # Type alias for all filesystem configs
@@ -58,9 +54,10 @@ def connect_fs(
             - "isolated": Real filesystem restricted to a directory.
                          Requires 'root' argument.
         **kwargs: Additional configuration for the filesystem type.
+            For type="virtual":
+                - max_size_mb (int): Optional. Max total file size in MB.
             For type="isolated":
                 - root (str): Required. Absolute path to root directory.
-                - tracking (bool): Optional. Track file changes (default: False).
 
     Returns:
         FSConfig for initialization.
@@ -71,8 +68,8 @@ def connect_fs(
         VirtualFSConfig(type='virtual', max_size_mb=None)
 
         Isolated filesystem:
-        >>> connect_fs(type="isolated", root="/path/to/project", tracking=True)
-        IsolatedFSConfig(type='isolated', root='/path/to/project', tracking=True, per_session=False)
+        >>> connect_fs(type="isolated", root="/path/to/project")
+        IsolatedFSConfig(type='isolated', root='/path/to/project')
     """
     if type == "virtual":
         max_size_mb = kwargs.pop("max_size_mb", None)
@@ -83,10 +80,7 @@ def connect_fs(
         return VirtualFSConfig(type=type, max_size_mb=max_size_mb)
 
     elif type == "isolated":
-        # Extract isolated-specific kwargs
         root = kwargs.pop("root", "")
-        tracking = kwargs.pop("tracking", False)
-        per_session = kwargs.pop("per_session", False)
 
         if kwargs:
             raise ValueError(
@@ -96,7 +90,7 @@ def connect_fs(
         if not root:
             raise ValueError("Isolated filesystem requires 'root' parameter")
 
-        return IsolatedFSConfig(root=root, tracking=tracking, per_session=per_session)
+        return IsolatedFSConfig(root=root)
 
     else:
         raise ValueError(
