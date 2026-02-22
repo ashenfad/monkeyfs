@@ -447,13 +447,14 @@ class IsolatedFS:
 
             stat_result = resolved.stat()
             return FileMetadata(
-                size=stat_result.st_size,
+                size=stat_result.st_size if not resolved.is_dir() else 0,
                 created_at=datetime.fromtimestamp(
                     stat_result.st_ctime, tz=timezone.utc
                 ).isoformat(),
                 modified_at=datetime.fromtimestamp(
                     stat_result.st_mtime, tz=timezone.utc
                 ).isoformat(),
+                is_dir=resolved.is_dir(),
             )
 
     def get_metadata_snapshot(self) -> dict[str, FileMetadata]:
