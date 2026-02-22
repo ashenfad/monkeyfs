@@ -4,7 +4,6 @@ from .base import FileInfo, FileMetadata, FileSystem
 from .config import FSConfig, IsolatedFSConfig, VirtualFSConfig, connect_fs
 from .context import suspend_fs_interception
 from .isolated import IsolatedFS
-from .memory import MemoryFS
 from .patching import get_current_fs, install, use_fs
 from .virtual import VirtualFile, VirtualFS
 
@@ -18,7 +17,6 @@ __all__ = [
     "install",
     "IsolatedFS",
     "IsolatedFSConfig",
-    "MemoryFS",
     "suspend_fs_interception",
     "use_fs",
     "VirtualFile",
