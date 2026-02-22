@@ -282,6 +282,149 @@ class TestPatchingEdgeCases:
             assert os.path.realpath("dir/../test.txt") == "/test.txt"
 
 
+class TestPartialProtocol:
+    """Test that missing optional methods raise NotImplementedError."""
+
+    def _make_minimal_fs(self):
+        """Create a FS with only required methods (no optional ones)."""
+
+        class MinimalFS:
+            def __init__(self):
+                self._files = {"/test.txt": b"content"}
+                self._cwd = "/"
+
+            def open(self, path, mode="r", **kwargs):
+                from io import BytesIO, TextIOWrapper
+
+                path = self._resolve(path)
+                if "w" in mode or "a" in mode or "x" in mode:
+                    buf = BytesIO()
+                    if "b" not in mode:
+                        return TextIOWrapper(buf)
+                    return buf
+                data = self._files.get(path)
+                if data is None:
+                    raise FileNotFoundError(path)
+                buf = BytesIO(data)
+                if "b" not in mode:
+                    return TextIOWrapper(buf)
+                return buf
+
+            def stat(self, path):
+                from datetime import datetime, timezone
+
+                from monkeyfs.base import FileMetadata
+
+                path = self._resolve(path)
+                if path in self._files:
+                    now = datetime.now(timezone.utc).isoformat()
+                    return FileMetadata(
+                        size=len(self._files[path]),
+                        created_at=now,
+                        modified_at=now,
+                    )
+                raise FileNotFoundError(path)
+
+            def exists(self, path):
+                return self._resolve(path) in self._files
+
+            def isfile(self, path):
+                return self._resolve(path) in self._files
+
+            def isdir(self, path):
+                path = self._resolve(path)
+                return path == "/" or any(
+                    f.startswith(path + "/") for f in self._files
+                )
+
+            def list(self, path="."):
+                path = self._resolve(path)
+                if not path.endswith("/"):
+                    path += "/"
+                names = set()
+                for f in self._files:
+                    if f.startswith(path):
+                        rest = f[len(path) :]
+                        if rest:
+                            names.add(rest.split("/")[0])
+                return sorted(names)
+
+            def remove(self, path):
+                path = self._resolve(path)
+                if path not in self._files:
+                    raise FileNotFoundError(path)
+                del self._files[path]
+
+            def mkdir(self, path, parents=False, exist_ok=False):
+                pass
+
+            def makedirs(self, path, exist_ok=True):
+                pass
+
+            def rename(self, src, dst):
+                src = self._resolve(src)
+                dst = self._resolve(dst)
+                if src not in self._files:
+                    raise FileNotFoundError(src)
+                self._files[dst] = self._files.pop(src)
+
+            def getcwd(self):
+                return self._cwd
+
+            def chdir(self, path):
+                self._cwd = self._resolve(path)
+
+            def _resolve(self, path):
+                path = str(path)
+                if not path.startswith("/"):
+                    path = self._cwd.rstrip("/") + "/" + path
+                import posixpath
+
+                return posixpath.normpath(path)
+
+        return MinimalFS()
+
+    def test_required_methods_work(self):
+        """Verify the minimal FS works for basic operations."""
+        fs = self._make_minimal_fs()
+        with use_fs(fs):
+            assert os.path.exists("test.txt") is True
+            assert os.path.isfile("test.txt") is True
+            assert os.listdir("/") == ["test.txt"]
+            stat_result = os.stat("test.txt")
+            assert stat_result.st_size == 7
+
+    def test_rmdir_raises_not_implemented(self):
+        fs = self._make_minimal_fs()
+        with use_fs(fs):
+            with pytest.raises(NotImplementedError, match="rmdir"):
+                os.rmdir("/somedir")
+
+    def test_islink_raises_not_implemented(self):
+        fs = self._make_minimal_fs()
+        with use_fs(fs):
+            with pytest.raises(NotImplementedError, match="islink"):
+                os.path.islink("test.txt")
+
+    def test_samefile_raises_not_implemented(self):
+        fs = self._make_minimal_fs()
+        with use_fs(fs):
+            with pytest.raises(NotImplementedError, match="samefile"):
+                os.path.samefile("test.txt", "test.txt")
+
+    def test_realpath_raises_not_implemented(self):
+        fs = self._make_minimal_fs()
+        with use_fs(fs):
+            with pytest.raises(NotImplementedError, match="realpath"):
+                os.path.realpath("test.txt")
+
+    def test_getsize_raises_not_implemented(self):
+        fs = self._make_minimal_fs()
+        with use_fs(fs):
+            with pytest.raises(NotImplementedError, match="getsize"):
+                os.path.getsize("test.txt")
+
+
 class TestIsolatedPatching:
     """Test patching with IsolatedFS."""
 
