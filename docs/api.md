@@ -1,7 +1,7 @@
 # API Reference
 
 - [Context managers](#context-managers) -- `patch`, `suspend`
-- [Filesystem implementations](#filesystem-implementations) -- `VirtualFS`, `IsolatedFS`, `VirtualFile`
+- [Filesystem implementations](#filesystem-implementations) -- `VirtualFS`, `IsolatedFS`
 - [Protocol & types](#protocol--types) -- `FileSystem`, `FileMetadata`, `FileInfo`
 - [Configuration](#configuration) -- `connect_fs`, config dataclasses
 - [Low-level](#low-level) -- `current_fs`
@@ -66,10 +66,6 @@ isolated = IsolatedFS(root="/tmp/sandbox")
 with patch(isolated):
     open("/etc/passwd")  # PermissionError
 ```
-
-### `VirtualFile`
-
-File object returned by `VirtualFS.open()`. Implements the standard file protocol (`read`, `write`, `seek`, `close`, etc.).
 
 ## Protocol & types
 
