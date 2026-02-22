@@ -255,6 +255,8 @@ class IsolatedFS:
         """
         with suspend():
             resolved = self._validate_path(path)
+            if any(m in mode for m in ("w", "a", "x")):
+                resolved.parent.mkdir(parents=True, exist_ok=True)
             return io.open(resolved, mode, **kwargs)
 
     def read(self, path: str) -> bytes:
