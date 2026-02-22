@@ -152,19 +152,11 @@ class TestIsolatedOpen:
         # File should be closed and content persisted
         assert fs.read("ctx.txt") == b"context"
 
-    def test_open_write_creates_parents(self, tmp_path):
-        """Test that open in write mode creates parent directories."""
+    def test_open_write_missing_parent_raises(self, tmp_path):
+        """Test that open in write mode raises if parent doesn't exist."""
         fs = IsolatedFS(str(tmp_path))
-        with fs.open("a/b/c.txt", "w") as f:
-            f.write("deep")
-        assert fs.read("a/b/c.txt") == b"deep"
-
-    def test_open_append_creates_parents(self, tmp_path):
-        """Test that open in append mode creates parent directories."""
-        fs = IsolatedFS(str(tmp_path))
-        with fs.open("x/y/z.txt", "a") as f:
-            f.write("appended")
-        assert fs.read("x/y/z.txt") == b"appended"
+        with pytest.raises(FileNotFoundError):
+            fs.open("a/b/c.txt", "w")
 
 
 # ---------------------------------------------------------------------------
