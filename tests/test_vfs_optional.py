@@ -215,6 +215,13 @@ class TestVFSSamefile:
         vfs = VirtualFS({})
         assert vfs.samefile("x.txt", "y.txt") is False
 
+    def test_samefile_cwd_relative(self):
+        vfs = VirtualFS({})
+        vfs.write("sub/f.txt", b"x")
+        vfs.chdir("sub")
+        assert vfs.samefile("f.txt", "/sub/f.txt") is True
+        assert vfs.samefile("f.txt", "f.txt") is True
+
 
 # ---------------------------------------------------------------------------
 # realpath
@@ -233,6 +240,12 @@ class TestVFSRealpath:
     def test_realpath_absolute(self):
         vfs = VirtualFS({})
         assert vfs.realpath("/file.txt") == "/file.txt"
+
+    def test_realpath_cwd_relative(self):
+        vfs = VirtualFS({})
+        vfs.makedirs("sub")
+        vfs.chdir("sub")
+        assert vfs.realpath("file.txt") == "/sub/file.txt"
 
 
 # ---------------------------------------------------------------------------

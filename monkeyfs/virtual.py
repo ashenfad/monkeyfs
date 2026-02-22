@@ -790,7 +790,7 @@ class VirtualFS:
         """
         if not (self.exists(path1) and self.exists(path2)):
             return False
-        return self._normalize_path(path1) == self._normalize_path(path2)
+        return self._normalize_path(self.resolve_path(path1)) == self._normalize_path(self.resolve_path(path2))
 
     def realpath(self, path: str) -> str:
         """Return the canonical path.
@@ -803,7 +803,7 @@ class VirtualFS:
         Returns:
             Canonical path string.
         """
-        return "/" + self._normalize_path(path).lstrip("/")
+        return "/" + self._normalize_path(self.resolve_path(path)).lstrip("/")
 
     def getsize(self, path: str) -> int:
         """Get file size in bytes.
