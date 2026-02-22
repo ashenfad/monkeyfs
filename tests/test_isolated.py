@@ -361,6 +361,21 @@ class TestIsolatedStat:
         assert isinstance(meta, FileMetadata)
         assert meta.size == 5
 
+    def test_stat_directory(self, tmp_path):
+        """Test stat returns is_dir=True for directories."""
+        fs = IsolatedFS(str(tmp_path))
+        fs.mkdir("subdir")
+        meta = fs.stat("subdir")
+        assert meta.is_dir is True
+        assert meta.size == 0
+
+    def test_stat_file_is_not_dir(self, tmp_path):
+        """Test stat returns is_dir=False for files."""
+        fs = IsolatedFS(str(tmp_path))
+        fs.write("file.txt", b"data")
+        meta = fs.stat("file.txt")
+        assert meta.is_dir is False
+
     def test_stat_nonexistent_raises(self, tmp_path):
         """Test stat on missing path raises FileNotFoundError."""
         fs = IsolatedFS(str(tmp_path))
