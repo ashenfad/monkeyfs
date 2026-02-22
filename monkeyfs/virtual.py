@@ -7,6 +7,8 @@ agent state, enabling file persistence and versioning.
 from __future__ import annotations
 
 import base64
+import errno
+import fnmatch
 import io
 import os
 import pickle
@@ -197,8 +199,6 @@ class VirtualFS:
 
     def glob(self, pattern: str) -> list[str]:
         """Return list of paths matching a glob pattern."""
-        import fnmatch
-
         results = []
         cwd = self.getcwd()
 
@@ -1087,12 +1087,10 @@ class VirtualFS:
 
     def readlink(self, path: str) -> str:
         """Read a symbolic link (not supported in VFS)."""
-        import errno
         raise OSError(errno.EINVAL, "Not a symbolic link", path)
 
     def symlink(self, src: str, dst: str) -> None:
         """Create a symbolic link (not supported in VFS)."""
-        import errno
         raise OSError(errno.EPERM, "VirtualFS does not support symlinks")
 
     def chmod(self, path: str, mode: int) -> None:

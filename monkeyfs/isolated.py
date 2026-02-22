@@ -7,6 +7,7 @@ with optional file change tracking via FileEvents.
 from __future__ import annotations
 
 import io
+import os
 import pickle
 from pathlib import Path
 from typing import Any
@@ -143,8 +144,6 @@ class IsolatedFS:
         Returns:
             Normalized absolute path (virtual, not host).
         """
-        import os.path
-
         if path.startswith("/"):
             return os.path.normpath(path)
         cwd = self.getcwd()
@@ -445,6 +444,66 @@ class IsolatedFS:
                 self._update_file_metadata(dst, size)
             else:
                 src_resolved.rename(dst_resolved)
+
+    def replace(self, src: str, dst: str) -> None:
+        """Replace dst with src."""
+        self.rename(src, dst)
+
+    def chmod(self, path: str, mode: int) -> None:
+        """Change file mode bits."""
+        with suspend_fs_interception():
+            resolved = self._validate_path(path)
+            resolved.chmod(mode)
+
+    def chown(self, path: str, uid: int, gid: int) -> None:
+        """Change file owner and group."""
+        with suspend_fs_interception():
+            resolved = self._validate_path(path)
+            os.chown(resolved, uid, gid)
+
+    def access(self, path: str, mode: int) -> bool:
+        """Check file access permissions."""
+        with suspend_fs_interception():
+            resolved = self._validate_path(path)
+            return os.access(resolved, mode)
+
+    def readlink(self, path: str) -> str:
+        """Read a symbolic link target."""
+        with suspend_fs_interception():
+            resolved = self._validate_path(path)
+            target = os.readlink(resolved)
+            # Return path relative to root
+            try:
+                target_path = Path(target)
+                if target_path.is_absolute():
+                    target_path.relative_to(self.root)
+            except ValueError:
+                raise PermissionError(
+                    f"Symlink target outside root: {target}"
+                )
+            return target
+
+    def symlink(self, src: str, dst: str) -> None:
+        """Create a symbolic link."""
+        with suspend_fs_interception():
+            dst_resolved = self._validate_path(dst)
+            # src is the target — validate it stays within root
+            src_resolved = self._validate_path(src)
+            dst_resolved.symlink_to(src_resolved)
+
+    def link(self, src: str, dst: str) -> None:
+        """Create a hard link."""
+        with suspend_fs_interception():
+            src_resolved = self._validate_path(src)
+            dst_resolved = self._validate_path(dst)
+            dst_resolved.hardlink_to(src_resolved)
+
+    def truncate(self, path: str, length: int) -> None:
+        """Truncate file to given length."""
+        with suspend_fs_interception():
+            resolved = self._validate_path(path)
+            os.truncate(resolved, length)
+            self._update_file_metadata(path, length)
 
     def stat(self, path: str) -> FileMetadata:
         """Get file metadata."""
