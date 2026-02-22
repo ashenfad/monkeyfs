@@ -109,7 +109,7 @@ truncate(path, length) -> None  # os.truncate
 
 ## Known limitations
 
-- **`tempfile.mkstemp()` / `NamedTemporaryFile()`** use `os.open()` (the low-level C syscall), not `builtins.open()`. Patching `os.open` is impractical — too many internal callers depend on it. Temporary files created this way will hit the real filesystem even inside `use_fs()`. Use `open()` with explicit paths instead.
+- **`tempfile`** -- `mkstemp()`, `NamedTemporaryFile()`, etc. use `os.open()` (low-level C syscall) which bypasses VFS patches. Use `open()` with explicit paths instead. fd-level interception is on the roadmap.
 
 ## Development
 
