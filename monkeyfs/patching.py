@@ -68,6 +68,17 @@ _originals: dict[str, Any] = {
     **({"chown": os.chown} if hasattr(os, "chown") else {}),
 }
 
+# Store fcntl originals (Posix only)
+try:
+    import fcntl as _fcntl_mod
+
+    _originals["fcntl"] = _fcntl_mod.fcntl
+    _originals["flock"] = _fcntl_mod.flock
+    _originals["lockf"] = _fcntl_mod.lockf
+    _has_fcntl = True
+except ImportError:
+    _has_fcntl = False
+
 
 
 # Define safe system paths for read-only passthrough
@@ -260,8 +271,11 @@ class ScandirWrapper:
     def __init__(self, iterator: Iterator[os.DirEntry[str]]):
         self._iterator = iterator
 
-    def __iter__(self) -> Iterator[os.DirEntry[str]]:
-        return self._iterator
+    def __iter__(self) -> "ScandirWrapper":
+        return self
+
+    def __next__(self) -> os.DirEntry[str]:
+        return next(self._iterator)
 
     def __enter__(self) -> "ScandirWrapper":
         return self
@@ -685,6 +699,27 @@ def _vfs_truncate(path: str, length: int) -> None:
     return _originals["truncate"](path, length)
 
 
+def _vfs_fcntl(fd: int, cmd: int, arg: Any = 0) -> Any:
+    """FileSystem-aware fcntl.fcntl() replacement — no-op under VFS."""
+    if current_fs.get() is not None:
+        return 0
+    return _originals["fcntl"](fd, cmd, arg)
+
+
+def _vfs_flock(fd: int, operation: int) -> None:
+    """FileSystem-aware fcntl.flock() replacement — no-op under VFS."""
+    if current_fs.get() is not None:
+        return
+    return _originals["flock"](fd, operation)
+
+
+def _vfs_lockf(fd: int, cmd: int, len: int = 0, start: int = 0, whence: int = 0) -> Any:
+    """FileSystem-aware fcntl.lockf() replacement — no-op under VFS."""
+    if current_fs.get() is not None:
+        return None
+    return _originals["lockf"](fd, cmd, len, start, whence)
+
+
 def _vfs_touch(self: Path, mode: int = 0o666, exist_ok: bool = True) -> None:
     """FileSystem-aware pathlib.Path.touch() replacement."""
     if exist_ok:
@@ -725,6 +760,9 @@ def _install() -> None:
     # Patch builtins
     builtins.open = _vfs_open  # type: ignore[assignment]
     io.open = _vfs_open  # type: ignore[assignment]
+    # Note: _io.open is NOT patched — it's the C-level implementation that
+    # CPython uses internally for sys.stdout, TextIOWrapper, pagers, etc.
+    # Patching it breaks internal I/O machinery.
 
     # Patch os module
     os.listdir = _vfs_listdir  # type: ignore[assignment]
@@ -804,6 +842,9 @@ def _install() -> None:
     _vfs_chmod.__name__ = "chmod"
     _vfs_chown.__name__ = "chown"
     _vfs_truncate.__name__ = "truncate"
+    _vfs_fcntl.__name__ = "fcntl"
+    _vfs_flock.__name__ = "flock"
+    _vfs_lockf.__name__ = "lockf"
 
     # Patch pathlib internal accessor (Python < 3.11, e.g. 3.10)
     if hasattr(pathlib, "_NormalAccessor"):
@@ -836,6 +877,23 @@ def _install() -> None:
             globber.scandir = staticmethod(_vfs_scandir)
         if hasattr(globber, "lstat"):
             globber.lstat = staticmethod(_vfs_lstat)
+
+    # Patch glob._StringGlobber (Python 3.13+) — caches os.lstat/os.scandir
+    # at import time, so we need to point them at our wrappers.
+    import glob as _glob_mod
+
+    if hasattr(_glob_mod, "_StringGlobber"):
+        sg = _glob_mod._StringGlobber  # type: ignore
+        if hasattr(sg, "scandir"):
+            sg.scandir = staticmethod(_vfs_scandir)
+        if hasattr(sg, "lstat"):
+            sg.lstat = staticmethod(_vfs_lstat)
+
+    # Patch fcntl (Posix only) — no-op stubs prevent file locking errors on VFS
+    if _has_fcntl:
+        _fcntl_mod.fcntl = _vfs_fcntl  # type: ignore[assignment]
+        _fcntl_mod.flock = _vfs_flock  # type: ignore[assignment]
+        _fcntl_mod.lockf = _vfs_lockf  # type: ignore[assignment]
 
 
 @contextmanager

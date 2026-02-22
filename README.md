@@ -99,10 +99,13 @@ truncate(path, length) -> None  # os.truncate
 
 | Module | Functions |
 |--------|-----------|
-| `builtins` | `open` |
+| `builtins` / `io` | `open` |
 | `os` | `listdir`, `scandir`, `remove`, `unlink`, `mkdir`, `makedirs`, `rmdir`, `rename`, `replace`, `stat`, `lstat`, `getcwd`, `chdir`, `utime`, `getenv`, `access`, `readlink`, `symlink`, `link`, `chmod`, `chown`, `truncate` |
 | `os.path` | `exists`, `isfile`, `isdir`, `islink`, `lexists`, `samefile`, `realpath`, `abspath`, `getsize`, `expanduser`, `expandvars` |
-| `pathlib` | `Path.touch` |
+| `pathlib` | `Path.touch`, `Path._globber` (3.13+) |
+| `glob` | `_StringGlobber` (3.13+) |
+| `fcntl` | `fcntl`, `flock`, `lockf` (no-op under VFS; Posix only) |
+| `shutil` | Optimization flags disabled during `use_fs()` to force string-path code paths |
 
 ## Known limitations
 

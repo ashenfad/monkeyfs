@@ -772,3 +772,141 @@ class TestShutilFlagDisabling:
 
         assert "/mydir/a.txt" not in fs.files
         assert "/mydir/b.txt" not in fs.files
+
+
+class TestTransitiveCoverage:
+    """Test that stdlib functions work transitively through patched primitives."""
+
+    def test_os_walk(self):
+        """os.walk should work through patched os.scandir."""
+        vfs = VirtualFS({})
+        vfs.write("a/b/c.txt", b"deep")
+        vfs.write("a/top.txt", b"top")
+        vfs.write("x.txt", b"root")
+
+        with use_fs(vfs):
+            walked = []
+            for dirpath, dirnames, filenames in os.walk("/"):
+                walked.append((dirpath, sorted(dirnames), sorted(filenames)))
+
+        # Root
+        assert walked[0][1] == ["a"]
+        assert walked[0][2] == ["x.txt"]
+
+        # Find the 'a' entry and 'a/b' entry
+        a_entries = [w for w in walked if w[0].rstrip("/").endswith("/a") or w[0] == "a"]
+        assert len(a_entries) == 1
+        assert "top.txt" in a_entries[0][2]
+        assert "b" in a_entries[0][1]
+
+    def test_glob_glob(self):
+        """glob.glob should work through patched functions."""
+        import glob
+
+        vfs = VirtualFS({})
+        vfs.write("data/file1.csv", b"a")
+        vfs.write("data/file2.csv", b"b")
+        vfs.write("data/readme.txt", b"c")
+
+        with use_fs(vfs):
+            matches = sorted(glob.glob("/data/*.csv"))
+
+        assert len(matches) == 2
+        assert any("file1.csv" in m for m in matches)
+        assert any("file2.csv" in m for m in matches)
+
+    def test_glob_recursive(self):
+        """glob.glob with recursive=True should work."""
+        import glob
+
+        vfs = VirtualFS({})
+        vfs.write("a/b/deep.txt", b"x")
+        vfs.write("a/shallow.txt", b"y")
+
+        with use_fs(vfs):
+            matches = sorted(glob.glob("/a/**/*.txt", recursive=True))
+
+        assert len(matches) == 2
+
+    def test_os_path_getmtime(self):
+        """os.path.getmtime should work through patched os.stat."""
+        import time
+
+        vfs = VirtualFS({})
+        vfs.write("f.txt", b"data")
+
+        with use_fs(vfs):
+            mtime = os.path.getmtime("f.txt")
+
+        assert mtime > 0
+        assert mtime <= time.time()
+
+    def test_os_removedirs(self):
+        """os.removedirs should work through patched os.rmdir."""
+        from monkeyfs import MemoryFS
+
+        fs = MemoryFS()
+        fs.mkdir("/a")
+        fs.mkdir("/a/b")
+        fs.mkdir("/a/b/c")
+
+        with use_fs(fs):
+            os.removedirs("a/b/c")
+
+        assert "/a/b/c" not in fs.dirs
+
+
+class TestFcntlPatching:
+    """Test that fcntl is patched to no-op under VFS."""
+
+    def test_fcntl_noop(self):
+        """fcntl.fcntl should no-op under VFS."""
+        try:
+            import fcntl
+        except ImportError:
+            pytest.skip("fcntl not available on this platform")
+
+        vfs = VirtualFS({})
+        with use_fs(vfs):
+            result = fcntl.fcntl(0, fcntl.F_GETFL)
+            assert result == 0
+
+    def test_flock_noop(self):
+        """fcntl.flock should no-op under VFS."""
+        try:
+            import fcntl
+        except ImportError:
+            pytest.skip("fcntl not available on this platform")
+
+        vfs = VirtualFS({})
+        with use_fs(vfs):
+            # Should not raise
+            fcntl.flock(0, fcntl.LOCK_EX)
+
+    def test_lockf_noop(self):
+        """fcntl.lockf should no-op under VFS."""
+        try:
+            import fcntl
+        except ImportError:
+            pytest.skip("fcntl not available on this platform")
+
+        vfs = VirtualFS({})
+        with use_fs(vfs):
+            # Should not raise
+            fcntl.lockf(0, fcntl.LOCK_EX)
+
+    def test_fcntl_passthrough_outside_context(self):
+        """fcntl should work normally outside VFS context."""
+        try:
+            import fcntl
+        except ImportError:
+            pytest.skip("fcntl not available on this platform")
+
+        import tempfile
+
+        # Create a real file to test with
+        with tempfile.NamedTemporaryFile() as tmp:
+            fd = tmp.fileno()
+            # Should call real fcntl, not raise
+            flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+            assert isinstance(flags, int)
