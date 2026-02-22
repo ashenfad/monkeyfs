@@ -131,7 +131,7 @@ class IsolatedFS:
                         results.append(virtual)
 
                 return sorted(results)
-            except Exception:
+            except (OSError, ValueError):
                 return []
 
     def resolve_path(self, path: str) -> str:
