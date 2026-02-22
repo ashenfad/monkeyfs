@@ -1,4 +1,4 @@
-# monkeyfs
+# monkeyfs 🐒
 
 Transparent filesystem interception via monkey-patching.
 
