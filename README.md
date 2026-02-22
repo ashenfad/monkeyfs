@@ -24,6 +24,9 @@ with patch(vfs):
     import os
     print(os.listdir("/"))        # ['data.csv']
     print(os.path.getsize("data.csv"))  # 30
+
+    with open("data.csv") as f:
+        print(f.read())           # name,score\nalice,98\nbob,87\n
 ```
 
 ## IsolatedFS
