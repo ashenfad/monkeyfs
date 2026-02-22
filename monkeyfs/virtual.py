@@ -1092,14 +1092,13 @@ class VirtualFS:
             is_dir = self.isdir(full_path)
 
             if is_dir:
-                # Directory - no metadata, use dummy values
                 result.append(
                     FileInfo(
                         name=name,
                         path=full_path,
                         size=0,
-                        created_at="",
-                        modified_at="",
+                        created_at=self._now_iso(),
+                        modified_at=self._now_iso(),
                         is_dir=True,
                     )
                 )
@@ -1118,16 +1117,16 @@ class VirtualFS:
                         )
                     )
                 else:
-                    # File exists but has no metadata (shouldn't happen with new code)
-                    # Create default metadata
+                    # File exists but has no metadata
                     content = self.read(full_path)
+                    now = self._now_iso()
                     result.append(
                         FileInfo(
                             name=name,
                             path=full_path,
                             size=len(content),
-                            created_at="",
-                            modified_at="",
+                            created_at=now,
+                            modified_at=now,
                             is_dir=False,
                         )
                     )
