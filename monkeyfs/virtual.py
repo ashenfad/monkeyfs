@@ -158,15 +158,15 @@ class VirtualFS:
     METADATA_KEY = "__vfs_metadata__"
     CWD_KEY = "__vfs_cwd__"
 
-    def __init__(self, state: MutableMapping[str, bytes], max_size_mb: int | None = None):
+    def __init__(self, state: MutableMapping[str, bytes] | None = None, max_size_mb: int | None = None):
         """Initialize virtual filesystem backed by state.
 
         Args:
-            state: State backend for file storage.
+            state: State backend for file storage. Defaults to an empty dict.
             max_size_mb: Maximum total size of all files in megabytes.
                 None means unlimited.
         """
-        self._state = state
+        self._state = state if state is not None else {}
         self._dir_cache: set[str] | None = None
         self._max_size_bytes: int | None = (
             max_size_mb * 1024 * 1024 if max_size_mb is not None else None
