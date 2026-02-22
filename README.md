@@ -104,6 +104,10 @@ truncate(path, length) -> None  # os.truncate
 | `os.path` | `exists`, `isfile`, `isdir`, `islink`, `lexists`, `samefile`, `realpath`, `abspath`, `getsize`, `expanduser`, `expandvars` |
 | `pathlib` | `Path.touch` |
 
+## Known limitations
+
+- **`tempfile.mkstemp()` / `NamedTemporaryFile()`** use `os.open()` (the low-level C syscall), not `builtins.open()`. Patching `os.open` is impractical — too many internal callers depend on it. Temporary files created this way will hit the real filesystem even inside `use_fs()`. Use `open()` with explicit paths instead.
+
 ## Development
 
 ```bash

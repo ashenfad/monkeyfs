@@ -674,3 +674,101 @@ class TestIsolatedPatching:
         with use_fs(isolated):
             assert os.path.samefile("test.txt", "link.txt") is True
             assert os.path.samefile("test.txt", "test.txt") is True
+
+
+class TestShutilFlagDisabling:
+    """Test that shutil optimization flags are disabled during use_fs()."""
+
+    def test_flags_disabled_inside_context(self):
+        """shutil optimization flags should be False inside use_fs()."""
+        import shutil
+
+        vfs = VirtualFS({})
+
+        with use_fs(vfs):
+            if hasattr(shutil, "_use_fd_functions"):
+                assert shutil._use_fd_functions is False
+            if hasattr(shutil, "_HAS_FCOPYFILE"):
+                assert shutil._HAS_FCOPYFILE is False
+            if hasattr(shutil, "_USE_CP_SENDFILE"):
+                assert shutil._USE_CP_SENDFILE is False
+
+    def test_flags_restored_after_context(self):
+        """shutil optimization flags should be restored after use_fs()."""
+        import shutil
+
+        # Capture original values
+        originals = {}
+        for flag in ("_use_fd_functions", "_HAS_FCOPYFILE", "_USE_CP_SENDFILE",
+                     "_USE_CP_COPY_FILE_RANGE"):
+            if hasattr(shutil, flag):
+                originals[flag] = getattr(shutil, flag)
+
+        vfs = VirtualFS({})
+        with use_fs(vfs):
+            pass
+
+        # Verify restoration
+        for flag, expected in originals.items():
+            assert getattr(shutil, flag) == expected
+
+    def test_flags_restored_on_exception(self):
+        """shutil flags should be restored even if an exception occurs."""
+        import shutil
+
+        originals = {}
+        for flag in ("_use_fd_functions", "_HAS_FCOPYFILE", "_USE_CP_SENDFILE"):
+            if hasattr(shutil, flag):
+                originals[flag] = getattr(shutil, flag)
+
+        vfs = VirtualFS({})
+        try:
+            with use_fs(vfs):
+                raise RuntimeError("boom")
+        except RuntimeError:
+            pass
+
+        for flag, expected in originals.items():
+            assert getattr(shutil, flag) == expected
+
+    def test_shutil_copyfile_works_in_context(self):
+        """shutil.copyfile should work through patched open() inside use_fs()."""
+        import shutil
+
+        vfs = VirtualFS({})
+        vfs.write("src.txt", b"copy me")
+
+        with use_fs(vfs):
+            shutil.copyfile("src.txt", "dst.txt")
+
+        assert vfs.read("dst.txt") == b"copy me"
+
+    def test_shutil_copy_works_with_memoryfs(self):
+        """shutil.copy (includes chmod) should work with MemoryFS."""
+        import shutil
+
+        from monkeyfs import MemoryFS
+
+        fs = MemoryFS()
+        fs.files["/src.txt"] = b"copy me"
+
+        with use_fs(fs):
+            shutil.copy("src.txt", "dst.txt")
+
+        assert fs.files["/dst.txt"] == b"copy me"
+
+    def test_shutil_rmtree_works_in_context(self):
+        """shutil.rmtree should work through patched functions inside use_fs()."""
+        import shutil
+
+        from monkeyfs import MemoryFS
+
+        fs = MemoryFS()
+        fs.write("/mydir/a.txt", b"aaa")
+        fs.write("/mydir/b.txt", b"bbb")
+
+        with use_fs(fs):
+            shutil.rmtree("mydir")
+
+        assert "/mydir/a.txt" not in fs.files
+        assert "/mydir/b.txt" not in fs.files

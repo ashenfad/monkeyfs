@@ -71,6 +71,11 @@ class MemoryFS:
     def write(self, path: str, content: bytes, mode: str = "w") -> None:
         path = self._resolve(path)
         self.files[path] = content
+        # Ensure parent directories exist implicitly
+        parent = posixpath.dirname(path)
+        while parent and parent != "/":
+            self.dirs.add(parent)
+            parent = posixpath.dirname(parent)
 
     def stat(self, path: str) -> Any:
         path = self._resolve(path)
