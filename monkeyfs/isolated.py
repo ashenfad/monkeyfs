@@ -458,22 +458,22 @@ class IsolatedFS:
             )
 
     def get_metadata_snapshot(self) -> dict[str, FileMetadata]:
-        """Get metadata for all files by walking the root directory."""
+        """Get metadata for all files and directories by walking the root."""
         with suspend():
             result = {}
             for item in self.root.rglob("*"):
-                if not item.is_file():
-                    continue
                 rel_path = str(item.relative_to(self.root))
                 st = item.stat()
+                is_dir = item.is_dir()
                 result[rel_path] = FileMetadata(
-                    size=st.st_size,
+                    size=st.st_size if not is_dir else 0,
                     created_at=datetime.fromtimestamp(
                         st.st_ctime, tz=timezone.utc
                     ).isoformat(),
                     modified_at=datetime.fromtimestamp(
                         st.st_mtime, tz=timezone.utc
                     ).isoformat(),
+                    is_dir=is_dir,
                 )
             return result
 
