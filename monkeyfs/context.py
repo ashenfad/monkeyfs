@@ -13,11 +13,9 @@ current_fs: contextvars.ContextVar[Any] = contextvars.ContextVar(
     "monkeyfs_current_fs", default=None
 )
 
-# Control whether VFS should defer snapshots
-# When True, VirtualFile.close() will not trigger snapshots
-# When False (default), VirtualFile.close() will snapshot normally
-vfs_defer_snapshots: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "monkeyfs_vfs_defer_snapshots", default=False
+# Internal flag controlling whether VFS defers commits to the backing store.
+_defer_commits: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "monkeyfs_defer_commits", default=False
 )
 
 
@@ -34,3 +32,33 @@ def suspend_fs_interception() -> Iterator[None]:
         yield
     finally:
         current_fs.reset(token)
+
+
+@contextmanager
+def defer_commits() -> Iterator[None]:
+    """Suppress per-mutation commits to the VirtualFS backing store.
+
+    VirtualFS accepts any ``MutableMapping[str, bytes]`` as its state.
+    If the mapping also has a ``commit()`` method (e.g. gitkv, shelve,
+    DiskCache), VirtualFS calls it after each mutation so changes are
+    persisted immediately.
+
+    Inside this context manager those automatic commits are suppressed,
+    letting you batch many writes and commit once at the end. This is
+    useful during bulk operations (agent execution, imports, etc.) where
+    per-write persistence would be expensive or cause recursion with
+    disk-backed state.
+
+    Example::
+
+        with defer_commits():
+            with patch(vfs):
+                # Many writes happen here — no commit() calls
+                ...
+        # After exiting, call state.commit() yourself if needed
+    """
+    token = _defer_commits.set(True)
+    try:
+        yield
+    finally:
+        _defer_commits.reset(token)

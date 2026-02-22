@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from monkeyfs import VirtualFS, use_fs
+from monkeyfs import VirtualFS, patch
 
 
 class TestPatchingBasics:
@@ -15,7 +15,7 @@ class TestPatchingBasics:
         """Test that open() is patched within VFS context."""
         vfs = VirtualFS({})
 
-        with use_fs(vfs):
+        with patch(vfs):
             with open("test.txt", "w") as f:
                 f.write("patched!")
 
@@ -45,7 +45,7 @@ class TestPatchingBasics:
         vfs.write("file1.txt", b"content1")
         vfs.write("file2.txt", b"content2")
 
-        with use_fs(vfs):
+        with patch(vfs):
             files = os.listdir("/")
 
         assert sorted(files) == ["file1.txt", "file2.txt"]
@@ -57,7 +57,7 @@ class TestPatchingBasics:
         vfs.write("file.txt", b"hello")
         vfs.write("sub/nested.txt", b"world")
 
-        with use_fs(vfs):
+        with patch(vfs):
             with os.scandir("/") as entries:
                 result = {e.name: e.is_dir() for e in entries}
 
@@ -69,7 +69,7 @@ class TestPatchingBasics:
 
         vfs.write("file.txt", b"12345")
 
-        with use_fs(vfs):
+        with patch(vfs):
             with os.scandir("/") as entries:
                 entry = next(iter(entries))
                 assert entry.name == "file.txt"
@@ -81,7 +81,7 @@ class TestPatchingBasics:
 
         vfs.write("file.txt", b"content")
 
-        with use_fs(vfs):
+        with patch(vfs):
             # Should not raise for existing file
             os.utime("file.txt", None)
 
@@ -89,7 +89,7 @@ class TestPatchingBasics:
         """Test that os.utime() raises for missing files."""
         vfs = VirtualFS({})
 
-        with use_fs(vfs):
+        with patch(vfs):
             with pytest.raises(FileNotFoundError):
                 os.utime("missing.txt", None)
 
@@ -99,7 +99,7 @@ class TestPatchingBasics:
 
         vfs.write("exists.txt", b"content")
 
-        with use_fs(vfs):
+        with patch(vfs):
             assert os.path.exists("exists.txt") is True
             assert os.path.exists("nonexistent.txt") is False
 
@@ -110,7 +110,7 @@ class TestPatchingBasics:
         # Write file to nested directory (like debug/dom.html)
         vfs.write("debug/dom.html", b"<html>test</html>")
 
-        with use_fs(vfs):
+        with patch(vfs):
             # Test os.path.exists
             assert os.path.exists("debug/dom.html") is True
 
@@ -126,7 +126,7 @@ class TestPatchingBasics:
         vfs.write("file.txt", b"content")
         vfs.write("dir/nested.txt", b"nested")
 
-        with use_fs(vfs):
+        with patch(vfs):
             assert os.path.isfile("file.txt") is True
             assert os.path.isfile("dir") is False
 
@@ -138,7 +138,7 @@ class TestPatchingBasics:
 
         vfs.write("file.txt", b"hello world")
 
-        with use_fs(vfs):
+        with patch(vfs):
             stat_result = os.stat("file.txt")
 
             # Verify file type and permissions
@@ -164,7 +164,7 @@ class TestPatchingBasics:
 
         vfs.write("dir/file.txt", b"content")
 
-        with use_fs(vfs):
+        with patch(vfs):
             stat_result = os.stat("dir")
 
             # Verify directory type and permissions
@@ -178,7 +178,7 @@ class TestPatchingBasics:
         """Test that os.stat() raises FileNotFoundError for missing paths."""
         vfs = VirtualFS({})
 
-        with use_fs(vfs):
+        with patch(vfs):
             with pytest.raises(FileNotFoundError):
                 os.stat("nonexistent.txt")
 
@@ -195,7 +195,7 @@ class TestContextIsolation:
 
         def worker(vfs, content):
             """Worker function that runs in thread pool."""
-            with use_fs(vfs):
+            with patch(vfs):
                 with open("file.txt", "w") as f:
                     f.write(content)
 
@@ -221,11 +221,11 @@ class TestPatchingEdgeCases:
         vfs_outer = VirtualFS({})
         vfs_inner = VirtualFS({})
 
-        with use_fs(vfs_outer):
+        with patch(vfs_outer):
             with open("outer.txt", "w") as f:
                 f.write("outer")
 
-            with use_fs(vfs_inner):
+            with patch(vfs_inner):
                 with open("inner.txt", "w") as f:
                     f.write("inner")
 
@@ -242,7 +242,7 @@ class TestPatchingEdgeCases:
         vfs = VirtualFS({})
 
         try:
-            with use_fs(vfs):
+            with patch(vfs):
                 with open("file.txt", "w") as f:
                     f.write("before error")
                 raise ValueError("test error")
@@ -277,7 +277,7 @@ class TestPatchingEdgeCases:
             tmp_path = tmp.name
 
         try:
-            with use_fs(vfs):
+            with patch(vfs):
                 # Opening by file descriptor should still work (bypass patching)
                 pass
         finally:
@@ -288,7 +288,7 @@ class TestPatchingEdgeCases:
         vfs = VirtualFS({})
         vfs.write("test.txt", b"content")
 
-        with use_fs(vfs):
+        with patch(vfs):
             assert os.path.islink("test.txt") is False
             assert os.path.islink("nonexistent.txt") is False
 
@@ -297,7 +297,7 @@ class TestPatchingEdgeCases:
         vfs = VirtualFS({})
         vfs.write("test.txt", b"content")
 
-        with use_fs(vfs):
+        with patch(vfs):
             assert os.path.lexists("test.txt") is True
             assert os.path.lexists("nonexistent.txt") is False
 
@@ -306,7 +306,7 @@ class TestPatchingEdgeCases:
         vfs = VirtualFS({})
         vfs.write("test.txt", b"content")
 
-        with use_fs(vfs):
+        with patch(vfs):
             assert os.path.samefile("test.txt", "test.txt") is True
             assert os.path.samefile("test.txt", "./test.txt") is True
 
@@ -318,7 +318,7 @@ class TestPatchingEdgeCases:
         vfs = VirtualFS({})
         vfs.write("test.txt", b"content")
 
-        with use_fs(vfs):
+        with patch(vfs):
             assert os.path.realpath("test.txt") == "/test.txt"
             assert os.path.realpath("./test.txt") == "/test.txt"
             assert os.path.realpath("/test.txt") == "/test.txt"
@@ -430,7 +430,7 @@ class TestPartialProtocol:
     def test_required_methods_work(self):
         """Verify the minimal FS works for basic operations."""
         fs = self._make_minimal_fs()
-        with use_fs(fs):
+        with patch(fs):
             assert os.path.exists("test.txt") is True
             assert os.path.isfile("test.txt") is True
             assert os.listdir("/") == ["test.txt"]
@@ -439,67 +439,67 @@ class TestPartialProtocol:
 
     def test_rmdir_raises_not_implemented(self):
         fs = self._make_minimal_fs()
-        with use_fs(fs):
+        with patch(fs):
             with pytest.raises(NotImplementedError, match="rmdir"):
                 os.rmdir("/somedir")
 
     def test_islink_raises_not_implemented(self):
         fs = self._make_minimal_fs()
-        with use_fs(fs):
+        with patch(fs):
             with pytest.raises(NotImplementedError, match="islink"):
                 os.path.islink("test.txt")
 
     def test_samefile_raises_not_implemented(self):
         fs = self._make_minimal_fs()
-        with use_fs(fs):
+        with patch(fs):
             with pytest.raises(NotImplementedError, match="samefile"):
                 os.path.samefile("test.txt", "test.txt")
 
     def test_realpath_raises_not_implemented(self):
         fs = self._make_minimal_fs()
-        with use_fs(fs):
+        with patch(fs):
             with pytest.raises(NotImplementedError, match="realpath"):
                 os.path.realpath("test.txt")
 
     def test_getsize_raises_not_implemented(self):
         fs = self._make_minimal_fs()
-        with use_fs(fs):
+        with patch(fs):
             with pytest.raises(NotImplementedError, match="getsize"):
                 os.path.getsize("test.txt")
 
     def test_replace_raises_not_implemented(self):
         fs = self._make_minimal_fs()
-        with use_fs(fs):
+        with patch(fs):
             with pytest.raises(NotImplementedError, match="replace"):
                 os.replace("test.txt", "other.txt")
 
     def test_access_raises_not_implemented(self):
         fs = self._make_minimal_fs()
-        with use_fs(fs):
+        with patch(fs):
             with pytest.raises(NotImplementedError, match="access"):
                 os.access("test.txt", os.R_OK)
 
     def test_readlink_raises_not_implemented(self):
         fs = self._make_minimal_fs()
-        with use_fs(fs):
+        with patch(fs):
             with pytest.raises(NotImplementedError, match="readlink"):
                 os.readlink("test.txt")
 
     def test_symlink_raises_not_implemented(self):
         fs = self._make_minimal_fs()
-        with use_fs(fs):
+        with patch(fs):
             with pytest.raises(NotImplementedError, match="symlink"):
                 os.symlink("test.txt", "link.txt")
 
     def test_link_raises_not_implemented(self):
         fs = self._make_minimal_fs()
-        with use_fs(fs):
+        with patch(fs):
             with pytest.raises(NotImplementedError, match="link"):
                 os.link("test.txt", "copy.txt")
 
     def test_chmod_raises_not_implemented(self):
         fs = self._make_minimal_fs()
-        with use_fs(fs):
+        with patch(fs):
             with pytest.raises(NotImplementedError, match="chmod"):
                 os.chmod("test.txt", 0o755)
 
@@ -507,13 +507,13 @@ class TestPartialProtocol:
         fs = self._make_minimal_fs()
         if not hasattr(os, "chown"):
             pytest.skip("os.chown not available on this platform")
-        with use_fs(fs):
+        with patch(fs):
             with pytest.raises(NotImplementedError, match="chown"):
                 os.chown("test.txt", 1000, 1000)
 
     def test_truncate_raises_not_implemented(self):
         fs = self._make_minimal_fs()
-        with use_fs(fs):
+        with patch(fs):
             with pytest.raises(NotImplementedError, match="truncate"):
                 os.truncate("test.txt", 0)
 
@@ -525,7 +525,7 @@ class TestOptionalMethods:
         fs = VirtualFS({})
         fs.write("a.txt", b"data")
 
-        with use_fs(fs):
+        with patch(fs):
             os.replace("a.txt", "b.txt")
 
         assert fs.isfile("b.txt")
@@ -535,7 +535,7 @@ class TestOptionalMethods:
         fs = VirtualFS({})
         fs.write("a.txt", b"data")
 
-        with use_fs(fs):
+        with patch(fs):
             assert os.access("a.txt", os.R_OK) is True
             assert os.access("missing.txt", os.R_OK) is False
 
@@ -543,14 +543,14 @@ class TestOptionalMethods:
         fs = VirtualFS({})
         fs.write("a.txt", b"data")
 
-        with use_fs(fs):
+        with patch(fs):
             with pytest.raises(OSError):
                 os.readlink("a.txt")
 
     def test_symlink_raises(self):
         fs = VirtualFS({})
 
-        with use_fs(fs):
+        with patch(fs):
             with pytest.raises(OSError):
                 os.symlink("target", "link")
 
@@ -558,7 +558,7 @@ class TestOptionalMethods:
         fs = VirtualFS({})
         fs.write("a.txt", b"data")
 
-        with use_fs(fs):
+        with patch(fs):
             os.link("a.txt", "b.txt")
 
         assert fs.read("b.txt") == b"data"
@@ -567,13 +567,13 @@ class TestOptionalMethods:
         fs = VirtualFS({})
         fs.write("a.txt", b"data")
 
-        with use_fs(fs):
+        with patch(fs):
             os.chmod("a.txt", 0o755)  # should not raise
 
     def test_chmod_missing_file(self):
         fs = VirtualFS({})
 
-        with use_fs(fs):
+        with patch(fs):
             with pytest.raises(FileNotFoundError):
                 os.chmod("missing.txt", 0o755)
 
@@ -584,14 +584,14 @@ class TestOptionalMethods:
         fs = VirtualFS({})
         fs.write("a.txt", b"data")
 
-        with use_fs(fs):
+        with patch(fs):
             os.chown("a.txt", 1000, 1000)  # should not raise
 
     def test_truncate(self):
         fs = VirtualFS({})
         fs.write("a.txt", b"hello world")
 
-        with use_fs(fs):
+        with patch(fs):
             os.truncate("a.txt", 5)
 
         assert fs.read("a.txt") == b"hello"
@@ -599,7 +599,7 @@ class TestOptionalMethods:
     def test_truncate_missing_file(self):
         fs = VirtualFS({})
 
-        with use_fs(fs):
+        with patch(fs):
             with pytest.raises(FileNotFoundError):
                 os.truncate("missing.txt", 0)
 
@@ -616,7 +616,7 @@ class TestIsolatedPatching:
 
         isolated = IsolatedFS(str(root), state={})
 
-        with use_fs(isolated):
+        with patch(isolated):
             assert os.path.realpath("test.txt") == "/test.txt"
             assert os.path.realpath("./test.txt") == "/test.txt"
             assert os.path.realpath("/test.txt") == "/test.txt"
@@ -634,7 +634,7 @@ class TestIsolatedPatching:
 
         isolated = IsolatedFS(str(root), state={})
 
-        with use_fs(isolated):
+        with patch(isolated):
             assert os.path.islink("link.txt") is True
             assert os.path.islink("test.txt") is False
 
@@ -651,21 +651,21 @@ class TestIsolatedPatching:
 
         isolated = IsolatedFS(str(root), state={})
 
-        with use_fs(isolated):
+        with patch(isolated):
             assert os.path.samefile("test.txt", "link.txt") is True
             assert os.path.samefile("test.txt", "test.txt") is True
 
 
 class TestShutilFlagDisabling:
-    """Test that shutil optimization flags are disabled during use_fs()."""
+    """Test that shutil optimization flags are disabled during patch()."""
 
     def test_flags_disabled_inside_context(self):
-        """shutil optimization flags should be False inside use_fs()."""
+        """shutil optimization flags should be False inside patch()."""
         import shutil
 
         vfs = VirtualFS({})
 
-        with use_fs(vfs):
+        with patch(vfs):
             if hasattr(shutil, "_use_fd_functions"):
                 assert shutil._use_fd_functions is False
             if hasattr(shutil, "_HAS_FCOPYFILE"):
@@ -674,7 +674,7 @@ class TestShutilFlagDisabling:
                 assert shutil._USE_CP_SENDFILE is False
 
     def test_flags_restored_after_context(self):
-        """shutil optimization flags should be restored after use_fs()."""
+        """shutil optimization flags should be restored after patch()."""
         import shutil
 
         # Capture original values
@@ -685,7 +685,7 @@ class TestShutilFlagDisabling:
                 originals[flag] = getattr(shutil, flag)
 
         vfs = VirtualFS({})
-        with use_fs(vfs):
+        with patch(vfs):
             pass
 
         # Verify restoration
@@ -703,7 +703,7 @@ class TestShutilFlagDisabling:
 
         vfs = VirtualFS({})
         try:
-            with use_fs(vfs):
+            with patch(vfs):
                 raise RuntimeError("boom")
         except RuntimeError:
             pass
@@ -712,13 +712,13 @@ class TestShutilFlagDisabling:
             assert getattr(shutil, flag) == expected
 
     def test_shutil_copyfile_works_in_context(self):
-        """shutil.copyfile should work through patched open() inside use_fs()."""
+        """shutil.copyfile should work through patched open() inside patch()."""
         import shutil
 
         vfs = VirtualFS({})
         vfs.write("src.txt", b"copy me")
 
-        with use_fs(vfs):
+        with patch(vfs):
             shutil.copyfile("src.txt", "dst.txt")
 
         assert vfs.read("dst.txt") == b"copy me"
@@ -730,20 +730,20 @@ class TestShutilFlagDisabling:
         fs = VirtualFS({})
         fs.write("src.txt", b"copy me")
 
-        with use_fs(fs):
+        with patch(fs):
             shutil.copy("src.txt", "dst.txt")
 
         assert fs.read("dst.txt") == b"copy me"
 
     def test_shutil_rmtree_works_in_context(self):
-        """shutil.rmtree should work through patched functions inside use_fs()."""
+        """shutil.rmtree should work through patched functions inside patch()."""
         import shutil
 
         fs = VirtualFS({})
         fs.write("/mydir/a.txt", b"aaa")
         fs.write("/mydir/b.txt", b"bbb")
 
-        with use_fs(fs):
+        with patch(fs):
             shutil.rmtree("mydir")
 
         assert not fs.isfile("mydir/a.txt")
@@ -760,7 +760,7 @@ class TestTransitiveCoverage:
         vfs.write("a/top.txt", b"top")
         vfs.write("x.txt", b"root")
 
-        with use_fs(vfs):
+        with patch(vfs):
             walked = []
             for dirpath, dirnames, filenames in os.walk("/"):
                 walked.append((dirpath, sorted(dirnames), sorted(filenames)))
@@ -784,7 +784,7 @@ class TestTransitiveCoverage:
         vfs.write("data/file2.csv", b"b")
         vfs.write("data/readme.txt", b"c")
 
-        with use_fs(vfs):
+        with patch(vfs):
             matches = sorted(glob.glob("/data/*.csv"))
 
         assert len(matches) == 2
@@ -799,7 +799,7 @@ class TestTransitiveCoverage:
         vfs.write("a/b/deep.txt", b"x")
         vfs.write("a/shallow.txt", b"y")
 
-        with use_fs(vfs):
+        with patch(vfs):
             matches = sorted(glob.glob("/a/**/*.txt", recursive=True))
 
         assert len(matches) == 2
@@ -811,7 +811,7 @@ class TestTransitiveCoverage:
         vfs = VirtualFS({})
         vfs.write("f.txt", b"data")
 
-        with use_fs(vfs):
+        with patch(vfs):
             mtime = os.path.getmtime("f.txt")
 
         assert mtime > 0
@@ -824,7 +824,7 @@ class TestTransitiveCoverage:
         fs.mkdir("/a/b")
         fs.mkdir("/a/b/c")
 
-        with use_fs(fs):
+        with patch(fs):
             os.removedirs("a/b/c")
 
         assert not fs.isdir("a/b/c")
@@ -841,7 +841,7 @@ class TestFcntlPatching:
             pytest.skip("fcntl not available on this platform")
 
         vfs = VirtualFS({})
-        with use_fs(vfs):
+        with patch(vfs):
             result = fcntl.fcntl(0, fcntl.F_GETFL)
             assert result == 0
 
@@ -853,7 +853,7 @@ class TestFcntlPatching:
             pytest.skip("fcntl not available on this platform")
 
         vfs = VirtualFS({})
-        with use_fs(vfs):
+        with patch(vfs):
             # Should not raise
             fcntl.flock(0, fcntl.LOCK_EX)
 
@@ -865,7 +865,7 @@ class TestFcntlPatching:
             pytest.skip("fcntl not available on this platform")
 
         vfs = VirtualFS({})
-        with use_fs(vfs):
+        with patch(vfs):
             # Should not raise
             fcntl.lockf(0, fcntl.LOCK_EX)
 

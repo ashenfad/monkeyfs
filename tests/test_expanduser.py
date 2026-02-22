@@ -7,7 +7,7 @@ correctly sanitize home directory references when VFS or IsolatedFS is active.
 import os
 import tempfile
 
-from monkeyfs import IsolatedFS, VirtualFS, use_fs
+from monkeyfs import IsolatedFS, VirtualFS, patch
 
 
 def test_expanduser_vfs():
@@ -20,7 +20,7 @@ def test_expanduser_vfs():
     assert len(real_home) > 1
 
     # With VFS, should return /
-    with use_fs(vfs):
+    with patch(vfs):
         assert os.path.expanduser("~") == "/"
         assert os.path.expanduser("~/test") == "/test"
         assert os.path.expanduser("~/.config") == "/.config"
@@ -39,7 +39,7 @@ def test_expanduser_isolated():
         assert real_home != "/"
 
         # With IsolatedFS, should return /
-        with use_fs(isolated):
+        with patch(isolated):
             assert os.path.expanduser("~") == "/"
             assert os.path.expanduser("~/Documents") == "/Documents"
             assert os.path.expanduser("~/.ssh/id_rsa") == "/.ssh/id_rsa"
@@ -55,7 +55,7 @@ def test_getenv_home_vfs():
     assert real_home != "/"
 
     # With VFS, should return /
-    with use_fs(vfs):
+    with patch(vfs):
         assert os.getenv("HOME") == "/"
         # Other env vars should work normally
         assert os.getenv("PATH") != "/"
@@ -73,7 +73,7 @@ def test_getenv_home_isolated():
         assert real_home != "/"
 
         # With IsolatedFS, should return /
-        with use_fs(isolated):
+        with patch(isolated):
             assert os.getenv("HOME") == "/"
 
 
@@ -87,7 +87,7 @@ def test_expandvars_vfs():
     assert "test" in real_result
 
     # With VFS, $HOME should expand to /
-    with use_fs(vfs):
+    with patch(vfs):
         assert os.path.expandvars("$HOME") == "/"
         assert os.path.expandvars("$HOME/test") == "/test"
         assert os.path.expandvars("${HOME}/config") == "/config"
@@ -106,7 +106,7 @@ def test_expandvars_isolated():
         assert real_result != "/.profile"
 
         # With IsolatedFS, $HOME should expand to /
-        with use_fs(isolated):
+        with patch(isolated):
             assert os.path.expandvars("$HOME") == "/"
             assert os.path.expandvars("${HOME}") == "/"
             assert os.path.expandvars("$HOME/Downloads") == "/Downloads"
@@ -116,7 +116,7 @@ def test_combined_expansion_vfs():
     """Test that expanduser and expandvars work together correctly with VFS."""
     vfs = VirtualFS({})
 
-    with use_fs(vfs):
+    with patch(vfs):
         # First expandvars, then expanduser
         path1 = os.path.expandvars("$HOME/.config")
         assert path1 == "/.config"
@@ -133,7 +133,7 @@ def test_pathlike_support():
     """Test that Path objects work with expanduser when VFS is active."""
     vfs = VirtualFS({})
 
-    with use_fs(vfs):
+    with patch(vfs):
         # expanduser should accept PathLike objects
         from pathlib import Path as PathlibPath
 
@@ -148,7 +148,7 @@ def test_no_leak_in_error_messages():
     """Verify that error messages don't leak home directory paths."""
     vfs = VirtualFS({})
 
-    with use_fs(vfs):
+    with patch(vfs):
         expanded = os.path.expanduser("~/.credentials")
         assert expanded == "/.credentials"
 

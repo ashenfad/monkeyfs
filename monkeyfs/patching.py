@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .base import FileMetadata
-from .context import current_fs, vfs_defer_snapshots
+from .context import current_fs, _defer_commits
 
 
 # Store original implementations once at import
@@ -897,8 +897,8 @@ def _install() -> None:
 
 
 @contextmanager
-def use_fs(fs: Any) -> Iterator[None]:
-    """Set filesystem for current async context.
+def patch(fs: Any) -> Iterator[None]:
+    """Patch filesystem calls to route through the given filesystem.
 
     Calls install() automatically on first use. It is async-safe —
     concurrent async tasks each get their own context.
@@ -910,7 +910,7 @@ def use_fs(fs: Any) -> Iterator[None]:
         None. File operations within the block will use the given filesystem.
 
     Example:
-        >>> with use_fs(vfs):
+        >>> with patch(vfs):
         ...     with open("data.csv", "w") as f:
         ...         f.write("a,b,c")
     """
@@ -947,5 +947,5 @@ def get_current_fs() -> Any | None:
 
 
 # Install patches at import time. They are inert when no filesystem
-# is active (current_fs is None) and activate when use_fs() sets one.
+# is active (current_fs is None) and activate when patch() sets one.
 install()
