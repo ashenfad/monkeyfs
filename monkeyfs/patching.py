@@ -16,6 +16,7 @@ import os
 import os.path
 import pathlib
 import re
+import shutil
 import site
 import sys
 import threading
@@ -856,11 +857,26 @@ def use_fs(fs: Any) -> Iterator[None]:
         ...         f.write("a,b,c")
     """
     install()
+
+    # Disable shutil platform optimizations that bypass our patches.
+    # _use_fd_functions: rmtree uses os.open/fstat/scandir(fd) — bypasses string-path patches.
+    # _HAS_FCOPYFILE: macOS fcopyfile on raw fds — VFS files lack fileno(), wastes try/except.
+    # _USE_CP_SENDFILE: Linux sendfile on raw fds — same issue.
+    # _USE_CP_COPY_FILE_RANGE: Python 3.14+ copy_file_range — same issue.
+    saved_shutil = {}
+    for flag in ("_use_fd_functions", "_HAS_FCOPYFILE", "_USE_CP_SENDFILE",
+                 "_USE_CP_COPY_FILE_RANGE"):
+        if hasattr(shutil, flag):
+            saved_shutil[flag] = getattr(shutil, flag)
+            setattr(shutil, flag, False)
+
     token = current_fs.set(fs)
     try:
         yield
     finally:
         current_fs.reset(token)
+        for flag, value in saved_shutil.items():
+            setattr(shutil, flag, value)
 
 
 def get_current_fs() -> Any | None:
