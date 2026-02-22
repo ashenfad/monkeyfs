@@ -197,6 +197,54 @@ class IsolatedFS:
 
             return resolved
 
+    def _validate_path_no_follow(self, path: str | Path) -> Path:
+        """Validate path without following the final symlink component.
+
+        Resolves the parent directory (following symlinks) to validate it's
+        within root, but preserves the final path component unresolved.
+        This is needed for symlink operations (readlink, islink, lexists).
+
+        Args:
+            path: File path to validate.
+
+        Returns:
+            Host path with resolved parent but unresolved final component.
+
+        Raises:
+            PermissionError: If path escapes root directory.
+        """
+        with suspend_fs_interception():
+            path_str = str(path)
+
+            # Resolve relative paths against CWD
+            if not path_str.startswith("/"):
+                cwd = self.getcwd()
+                path_str = f"{cwd}/{path_str}"
+
+            p = Path(path_str)
+
+            # Map virtual absolute path to host path
+            if p.is_absolute():
+                try:
+                    p.relative_to(self.root)
+                    host_path = p
+                except ValueError:
+                    rel = p.relative_to(p.anchor)
+                    host_path = self.root / rel
+            else:
+                host_path = self.root / p
+
+            # Resolve only the parent, keep the final component unresolved
+            parent_resolved = host_path.parent.resolve()
+            try:
+                parent_resolved.relative_to(self.root)
+            except ValueError:
+                raise PermissionError(
+                    f"Path outside root: {parent_resolved} (root: {self.root})"
+                )
+
+            return parent_resolved / host_path.name
+
     def _get_metadata(self) -> dict[str, FileMetadata]:
         """Get current metadata dictionary from state."""
         if self._state is None:
@@ -351,29 +399,20 @@ class IsolatedFS:
     def islink(self, path: str) -> bool:
         """Check if path is a symbolic link."""
         with suspend_fs_interception():
-            p = Path(path)
-            if p.is_absolute():
-                p = p.relative_to(p.anchor)
-
-            target = self.root / p
-            # Resolve parent to ensure it's within root
             try:
-                parent_resolved = target.parent.resolve()
-                parent_resolved.relative_to(self.root)
-            except (ValueError, FileNotFoundError):
+                unresolved = self._validate_path_no_follow(path)
+                return unresolved.is_symlink()
+            except (PermissionError, FileNotFoundError):
                 return False
-
-            # Check the link itself
-            return (parent_resolved / target.name).is_symlink()
 
     def lexists(self, path: str) -> bool:
         """Check if path exists (without following symlinks)."""
         with suspend_fs_interception():
-            # For lexists, we don't want _validate_path to resolve symlinks
-            # but we still need to check if it's within root.
-            # Simplified for now: just use exists() since _validate_path resolves anyway.
-            # Real lexists support would need a non-resolving _validate_path.
-            return self.exists(path)
+            try:
+                unresolved = self._validate_path_no_follow(path)
+                return unresolved.exists() or unresolved.is_symlink()
+            except (PermissionError, FileNotFoundError):
+                return False
 
     def samefile(self, path1: str, path2: str) -> bool:
         """Check if two paths refer to the same file."""
@@ -470,9 +509,9 @@ class IsolatedFS:
     def readlink(self, path: str) -> str:
         """Read a symbolic link target."""
         with suspend_fs_interception():
-            resolved = self._validate_path(path)
-            target = os.readlink(resolved)
-            # Return path relative to root
+            unresolved = self._validate_path_no_follow(path)
+            target = os.readlink(unresolved)
+            # Validate target stays within root
             try:
                 target_path = Path(target)
                 if target_path.is_absolute():
