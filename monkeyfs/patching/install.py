@@ -5,6 +5,7 @@ import io
 import os
 import pathlib
 import shutil
+import tempfile
 import threading
 from contextlib import contextmanager
 from pathlib import Path
@@ -37,6 +38,12 @@ from .patches import (
     _vfs_makedirs,
     _vfs_mkdir,
     _vfs_open,
+    _vfs_os_close,
+    _vfs_os_fstat,
+    _vfs_os_lseek,
+    _vfs_os_open,
+    _vfs_os_read,
+    _vfs_os_write,
     _vfs_readlink,
     _vfs_realpath,
     _vfs_remove,
@@ -104,6 +111,14 @@ def _apply_patches() -> None:
     if hasattr(os, "chown"):
         os.chown = _vfs_chown  # type: ignore[assignment]
 
+    # Patch low-level fd operations
+    os.open = _vfs_os_open  # type: ignore[assignment]
+    os.read = _vfs_os_read  # type: ignore[assignment]
+    os.write = _vfs_os_write  # type: ignore[assignment]
+    os.close = _vfs_os_close  # type: ignore[assignment]
+    os.fstat = _vfs_os_fstat  # type: ignore[assignment]
+    os.lseek = _vfs_os_lseek  # type: ignore[assignment]
+
     # Patch pathlib.Path.touch
     Path.touch = _vfs_touch  # type: ignore[assignment]
 
@@ -161,6 +176,12 @@ def _apply_patches() -> None:
     _vfs_fcntl.__name__ = "fcntl"
     _vfs_flock.__name__ = "flock"
     _vfs_lockf.__name__ = "lockf"
+    _vfs_os_open.__name__ = "open"
+    _vfs_os_read.__name__ = "read"
+    _vfs_os_write.__name__ = "write"
+    _vfs_os_close.__name__ = "close"
+    _vfs_os_fstat.__name__ = "fstat"
+    _vfs_os_lseek.__name__ = "lseek"
 
     # Patch pathlib internal accessor (Python < 3.11, e.g. 3.10)
     if hasattr(pathlib, "_NormalAccessor"):
@@ -248,11 +269,16 @@ def patch(fs: Any) -> Iterator[None]:
             saved_shutil[flag] = getattr(shutil, flag)
             setattr(shutil, flag, False)
 
+    # Reset tempfile's cached tempdir so it re-evaluates inside VFS
+    saved_tempdir = tempfile.tempdir
+    tempfile.tempdir = None
+
     token = current_fs.set(fs)
     try:
         yield
     finally:
         current_fs.reset(token)
+        tempfile.tempdir = saved_tempdir
         for flag, value in saved_shutil.items():
             setattr(shutil, flag, value)
 
