@@ -243,7 +243,10 @@ def _apply_patches() -> None:
     # _TemporaryFileCloser.cleanup captures os.unlink as a default arg at
     # import time, bypassing our runtime patches. Re-bind it so
     # NamedTemporaryFile(delete=True) cleanup routes through the VFS.
-    if hasattr(tempfile, "_TemporaryFileCloser"):
+    # The cleanup method with the cached default was added in Python 3.12.
+    if hasattr(tempfile, "_TemporaryFileCloser") and hasattr(
+        getattr(tempfile, "_TemporaryFileCloser"), "cleanup"
+    ):
         _closer_cls = tempfile._TemporaryFileCloser  # type: ignore[attr-defined]
         _orig_cleanup = _closer_cls.cleanup
         defaults = list(_orig_cleanup.__defaults__ or [])
