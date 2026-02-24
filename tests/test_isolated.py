@@ -7,7 +7,6 @@ import pytest
 from monkeyfs import IsolatedFS
 from monkeyfs.base import FileInfo, FileMetadata
 
-
 # ---------------------------------------------------------------------------
 # Core read/write
 # ---------------------------------------------------------------------------
@@ -46,11 +45,13 @@ class TestIsolatedCoreReadWrite:
     def test_write_many(self, tmp_path):
         """Test writing multiple files at once."""
         fs = IsolatedFS(str(tmp_path))
-        fs.write_many({
-            "a.txt": b"alpha",
-            "b.txt": b"bravo",
-            "c.txt": b"charlie",
-        })
+        fs.write_many(
+            {
+                "a.txt": b"alpha",
+                "b.txt": b"bravo",
+                "c.txt": b"charlie",
+            }
+        )
         assert fs.read("a.txt") == b"alpha"
         assert fs.read("b.txt") == b"bravo"
         assert fs.read("c.txt") == b"charlie"
@@ -79,11 +80,13 @@ class TestIsolatedCoreReadWrite:
     def test_remove_many(self, tmp_path):
         """Test removing multiple files, leaving others intact."""
         fs = IsolatedFS(str(tmp_path))
-        fs.write_many({
-            "a.txt": b"a",
-            "b.txt": b"b",
-            "c.txt": b"c",
-        })
+        fs.write_many(
+            {
+                "a.txt": b"a",
+                "b.txt": b"b",
+                "c.txt": b"c",
+            }
+        )
         fs.remove_many(["a.txt", "b.txt"])
         assert fs.exists("a.txt") is False
         assert fs.exists("b.txt") is False
@@ -349,7 +352,6 @@ class TestIsolatedListdir:
         assert "a.txt" in result
         assert "sub" in result
         assert os.path.join("sub", "b.txt") in result
-
 
     def test_list_nonexistent_raises(self, tmp_path):
         """Test listing a nonexistent directory raises FileNotFoundError."""
