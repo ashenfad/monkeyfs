@@ -181,9 +181,7 @@ class IsolatedFS:
             try:
                 resolved.relative_to(self.root)
             except ValueError:
-                raise PermissionError(
-                    f"Path escapes sandbox: '{path_str}'"
-                )
+                raise PermissionError(f"Path escapes sandbox: '{path_str}'")
 
             return resolved
 
@@ -229,9 +227,7 @@ class IsolatedFS:
             try:
                 parent_resolved.relative_to(self.root)
             except ValueError:
-                raise PermissionError(
-                    f"Path escapes sandbox: '{path_str}'"
-                )
+                raise PermissionError(f"Path escapes sandbox: '{path_str}'")
 
             return parent_resolved / host_path.name
 
@@ -411,9 +407,7 @@ class IsolatedFS:
                 if target_path.is_absolute():
                     target_path.relative_to(self.root)
             except ValueError:
-                raise PermissionError(
-                    f"Symlink target escapes sandbox: '{path}'"
-                )
+                raise PermissionError(f"Symlink target escapes sandbox: '{path}'")
             return target
 
     def symlink(self, src: str, dst: str) -> None:
