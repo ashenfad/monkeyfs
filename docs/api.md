@@ -12,7 +12,7 @@
 
 ### `patch(fs)`
 
-Activate filesystem interception. All stdlib file operations within the block route through `fs`:
+Activate filesystem interception. All stdlib file operations within the block route through `fs`. Patches are applied lazily on first call and remain inert (falling through to originals) outside the context:
 
 ```python
 from monkeyfs import VirtualFS, patch
@@ -156,13 +156,15 @@ current_fs.get()  # None (no patching active)
 | Module | Functions |
 |--------|-----------|
 | `builtins` / `io` | `open` |
-| `os` | `listdir`, `scandir`, `remove`, `unlink`, `mkdir`, `makedirs`, `rmdir`, `rename`, `replace`, `stat`, `lstat`, `getcwd`, `chdir`, `utime`, `getenv`, `access`, `readlink`, `symlink`, `link`, `chmod`, `chown`, `truncate` |
+| `os` | `listdir`, `scandir`, `remove`, `unlink`, `mkdir`, `makedirs`, `rmdir`, `rename`, `replace`, `stat`, `lstat`, `getcwd`, `chdir`, `utime`, `getenv`, `access`, `readlink`, `symlink`, `link`, `chmod`, `chown`, `truncate`, `open`, `read`, `write`, `close`, `fstat`, `lseek` |
 | `os.path` | `exists`, `isfile`, `isdir`, `islink`, `lexists`, `samefile`, `realpath`, `abspath`, `getsize`, `expanduser`, `expandvars` |
 | `pathlib` | `Path.touch`, `Path._globber` (3.13+) |
 | `glob` | `_StringGlobber` (3.13+) |
 | `fcntl` | `fcntl`, `flock`, `lockf` (no-op under VFS; Posix only) |
 | `shutil` | Optimization flags disabled during `patch()` to force string-path code paths |
+| `tempfile` | `tempdir` reset during `patch()` so temp paths resolve inside VFS; `_TemporaryFileCloser` unlink re-bound for `delete=True` cleanup |
 
 ## Known limitations
 
-- **`tempfile`** -- `mkstemp()`, `NamedTemporaryFile()`, etc. use `os.open()` (low-level C syscall) which bypasses VFS patches. Use `open()` with explicit paths instead.
+- **C-level syscalls** -- Libraries that call the OS directly from C extensions (e.g. SQLite, `mmap`) bypass Python-level patches entirely. Only Python-level file operations are intercepted.
+- **`fcntl` locking** -- `fcntl`, `flock`, and `lockf` are no-ops under VFS since virtual files have no real file descriptors. Code that depends on advisory locking semantics will not see contention.
