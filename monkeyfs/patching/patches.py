@@ -32,8 +32,10 @@ def _vfs_open(path: Any, *args: Any, **kwargs: Any) -> Any:
 
     # Integer fd path (os.fdopen): wrap virtual fd in a file object
     if isinstance(path, int) and _fd_table.is_virtual(path):
-        clean_kwargs = {k: v for k, v in kwargs.items() if k != "opener"}
-        return _wrap_virtual_fd(path, mode, _fd_table, **clean_kwargs)
+        wrap_kwargs = {
+            k: kwargs[k] for k in ("encoding", "errors", "newline") if k in kwargs
+        }
+        return _wrap_virtual_fd(path, mode, _fd_table, **wrap_kwargs)
 
     if fs is not None and isinstance(path, (str, Path)):
         opener = kwargs.get("opener")
@@ -42,8 +44,12 @@ def _vfs_open(path: Any, *args: Any, **kwargs: Any) -> Any:
         if opener is not None:
             fd = opener(str(path), _mode_to_flags(mode))
             if _fd_table.is_virtual(fd):
-                clean_kwargs = {k: v for k, v in kwargs.items() if k != "opener"}
-                return _wrap_virtual_fd(fd, mode, _fd_table, **clean_kwargs)
+                wrap_kwargs = {
+                    k: kwargs[k]
+                    for k in ("encoding", "errors", "newline")
+                    if k in kwargs
+                }
+                return _wrap_virtual_fd(fd, mode, _fd_table, **wrap_kwargs)
             else:
                 # Real fd from opener, use original fdopen
                 return _originals["open"](fd, *args, **kwargs)
