@@ -295,6 +295,8 @@ class VirtualFS:
 
         # Normalize path to canonical form
         # This handles ./a.py vs a.py, and a/./b vs a/b
+        # On Windows, normpath produces backslashes; replace with forward
+        # slashes so VFS keys are consistent across platforms.
         path = os.path.normpath(path).replace("\\", "/")
 
         # Remove leading slashes, handle empty/root
