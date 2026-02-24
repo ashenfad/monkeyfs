@@ -11,20 +11,28 @@ keywords = ["filesystem", "monkey-patch", "sandbox", "vfs", "interception"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: System :: Filesystems",
+    "Typing :: Typed",
 ]
 requires-python = ">=3.10"
-
 dependencies = []
 
+[project.urls]
+"Homepage" = "https://github.com/ashenfad/monkeyfs"
+"Bug Tracker" = "https://github.com/ashenfad/monkeyfs/issues"
+"Documentation" = "https://github.com/ashenfad/monkeyfs#readme"
+"Source" = "https://github.com/ashenfad/monkeyfs"
+
 [project.optional-dependencies]
-kv = ["gitkv"]
+kv = ["kvgit"]
 dev = [
     "ruff",
     "pre-commit",

@@ -12,9 +12,8 @@ import fnmatch
 import io
 import os
 import pickle
-from datetime import datetime, timezone
-
 from collections.abc import MutableMapping
+from datetime import datetime, timezone
 
 from .base import FileInfo, FileMetadata
 
@@ -30,7 +29,14 @@ class VirtualFile:
         mode: The file mode ('w', 'wb', 'a', 'ab').
     """
 
-    def __init__(self, vfs: "VirtualFS", state: MutableMapping[str, bytes], key: str, path: str, mode: str):
+    def __init__(
+        self,
+        vfs: "VirtualFS",
+        state: MutableMapping[str, bytes],
+        key: str,
+        path: str,
+        mode: str,
+    ):
         """Initialize a writable virtual file.
 
         Args:
@@ -158,7 +164,11 @@ class VirtualFS:
     METADATA_KEY = "__vfs_metadata__"
     CWD_KEY = "__vfs_cwd__"
 
-    def __init__(self, state: MutableMapping[str, bytes] | None = None, max_size_mb: int | None = None):
+    def __init__(
+        self,
+        state: MutableMapping[str, bytes] | None = None,
+        max_size_mb: int | None = None,
+    ):
         """Initialize virtual filesystem backed by state.
 
         Args:
@@ -489,9 +499,7 @@ class VirtualFS:
             normalized = self._normalize_path(resolved)
             parent = "/".join(normalized.split("/")[:-1])
             if parent and not self.isdir("/" + parent):
-                raise FileNotFoundError(
-                    f"No such file or directory: '{path}'"
-                )
+                raise FileNotFoundError(f"No such file or directory: '{path}'")
 
             return VirtualFile(self, self._state, key, path, mode)
 
@@ -686,7 +694,7 @@ class VirtualFS:
             dir_path = dir_path.lstrip("/")
             if path and not dir_path.startswith(path):
                 continue
-            remainder = dir_path[len(path):]
+            remainder = dir_path[len(path) :]
             if not remainder:
                 continue
             if recursive:
@@ -808,7 +816,9 @@ class VirtualFS:
         """
         if not (self.exists(path1) and self.exists(path2)):
             return False
-        return self._normalize_path(self.resolve_path(path1)) == self._normalize_path(self.resolve_path(path2))
+        return self._normalize_path(self.resolve_path(path1)) == self._normalize_path(
+            self.resolve_path(path2)
+        )
 
     def realpath(self, path: str) -> str:
         """Return the canonical path.
@@ -896,9 +906,7 @@ class VirtualFS:
         # Validate parent exists
         parent = "/".join(normalized.split("/")[:-1])
         if parent and not self.isdir("/" + parent):
-            raise FileNotFoundError(
-                f"No such file or directory: '{path}'"
-            )
+            raise FileNotFoundError(f"No such file or directory: '{path}'")
 
         # Check if already exists
         if self.isfile(path):
@@ -1014,7 +1022,6 @@ class VirtualFS:
         elif self.isdir(src):
             # Directory rename — move all children
             src_prefix = src_norm.rstrip("/") + "/"
-            dst_prefix = dst_norm.rstrip("/") + "/"
 
             # Collect all files under src
             files_to_move = []
@@ -1030,7 +1037,7 @@ class VirtualFS:
             metadata = self._get_metadata()
             for key, file_path in files_to_move:
                 # Compute new path
-                rel = file_path[len(src_norm):]
+                rel = file_path[len(src_norm) :]
                 new_path = dst_norm + rel
                 new_key = self._encode_path("/" + new_path)
 
@@ -1043,11 +1050,10 @@ class VirtualFS:
 
             # Move directory metadata entries
             dir_keys_to_move = [
-                k for k in metadata
-                if k == src_norm or k.startswith(src_prefix)
+                k for k in metadata if k == src_norm or k.startswith(src_prefix)
             ]
             for k in dir_keys_to_move:
-                rel = k[len(src_norm):]
+                rel = k[len(src_norm) :]
                 metadata[dst_norm + rel] = metadata.pop(k)
 
             self._set_metadata(metadata)
