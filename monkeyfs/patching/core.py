@@ -48,6 +48,13 @@ _originals: dict[str, Any] = {
     "chmod": os.chmod,
     "truncate": os.truncate,
     **({"chown": os.chown} if hasattr(os, "chown") else {}),
+    # Low-level fd operations
+    "os_open": os.open,
+    "os_read": os.read,
+    "os_write": os.write,
+    "os_close": os.close,
+    "os_fstat": os.fstat,
+    "os_lseek": os.lseek,
 }
 
 # Store fcntl originals (Posix only)

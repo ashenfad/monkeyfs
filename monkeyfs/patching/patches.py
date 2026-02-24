@@ -17,6 +17,7 @@ from .core import (
     _originals,
     _require,
 )
+from .fdtable import _fd_table, _wrap_virtual_fd
 
 
 def _vfs_open(path: Any, *args: Any, **kwargs: Any) -> Any:
@@ -28,7 +29,25 @@ def _vfs_open(path: Any, *args: Any, **kwargs: Any) -> Any:
         return _originals["open"](path, *args, **kwargs)
 
     fs = current_fs.get()
+
+    # Integer fd path (os.fdopen): wrap virtual fd in a file object
+    if isinstance(path, int) and _fd_table.is_virtual(path):
+        clean_kwargs = {k: v for k, v in kwargs.items() if k != "opener"}
+        return _wrap_virtual_fd(path, mode, _fd_table, **clean_kwargs)
+
     if fs is not None and isinstance(path, (str, Path)):
+        opener = kwargs.get("opener")
+
+        # Opener path (NamedTemporaryFile): let opener call patched os.open
+        if opener is not None:
+            fd = opener(str(path), _mode_to_flags(mode))
+            if _fd_table.is_virtual(fd):
+                clean_kwargs = {k: v for k, v in kwargs.items() if k != "opener"}
+                return _wrap_virtual_fd(fd, mode, _fd_table, **clean_kwargs)
+            else:
+                # Real fd from opener, use original fdopen
+                return _originals["open"](fd, *args, **kwargs)
+
         token = _in_vfs_operation.set(True)
         try:
             return fs.open(str(path), mode, **kwargs)
@@ -46,6 +65,26 @@ def _vfs_open(path: Any, *args: Any, **kwargs: Any) -> Any:
             _in_vfs_operation.reset(token)
 
     return _originals["open"](path, *args, **kwargs)
+
+
+def _mode_to_flags(mode: str) -> int:
+    """Convert Python open() mode string to os.open() flags."""
+    flags = 0
+    if "+" in mode:
+        flags |= os.O_RDWR
+    elif "w" in mode or "a" in mode or "x" in mode:
+        flags |= os.O_WRONLY
+    else:
+        flags |= os.O_RDONLY
+
+    if "w" in mode:
+        flags |= os.O_CREAT | os.O_TRUNC
+    elif "x" in mode:
+        flags |= os.O_CREAT | os.O_EXCL
+    elif "a" in mode:
+        flags |= os.O_CREAT | os.O_APPEND
+
+    return flags
 
 
 def _vfs_listdir(path: str = ".") -> list[str]:
@@ -588,3 +627,106 @@ def _vfs_touch(self: Path, mode: int = 0o666, exist_ok: bool = True) -> None:
     else:
         with builtins.open(self, "x"):
             pass
+
+
+# Low-level fd operation wrappers
+
+
+def _vfs_os_open(
+    path: Any, flags: int, mode: int = 0o777, *, dir_fd: Any = None
+) -> int:
+    """VFS-aware os.open() replacement."""
+    if dir_fd is not None:
+        return _originals["os_open"](path, flags, mode, dir_fd=dir_fd)
+
+    if _in_vfs_operation.get():
+        return _originals["os_open"](path, flags, mode)
+
+    fs = current_fs.get()
+    if fs is not None and isinstance(path, (str, Path)):
+        path_str = str(path)
+
+        # Read-only opens on safe system paths pass through
+        is_write = flags & (
+            os.O_CREAT | os.O_WRONLY | os.O_RDWR | os.O_TRUNC | os.O_APPEND
+        )
+        if not is_write and _is_safe_system_path(path_str):
+            return _originals["os_open"](path_str, flags, mode)
+
+        token = _in_vfs_operation.set(True)
+        try:
+            return _fd_table.allocate(path_str, fs, flags, mode)
+        except (PermissionError, FileNotFoundError):
+            if not is_write and _is_safe_system_path(path_str):
+                return _originals["os_open"](path_str, flags, mode)
+            raise
+        finally:
+            _in_vfs_operation.reset(token)
+
+    return _originals["os_open"](path, flags, mode)
+
+
+def _vfs_os_read(fd: int, n: int) -> bytes:
+    """VFS-aware os.read() replacement."""
+    vfd = _fd_table.get(fd)
+    if vfd is not None:
+        if not vfd.readable:
+            raise OSError(errno.EBADF, "Bad file descriptor")
+        return vfd.buffer.read(n) or b""
+    return _originals["os_read"](fd, n)
+
+
+def _vfs_os_write(fd: int, data: bytes) -> int:
+    """VFS-aware os.write() replacement."""
+    vfd = _fd_table.get(fd)
+    if vfd is not None:
+        if not vfd.writable:
+            raise OSError(errno.EBADF, "Bad file descriptor")
+        return vfd.buffer.write(data)
+    return _originals["os_write"](fd, data)
+
+
+def _vfs_os_close(fd: int) -> None:
+    """VFS-aware os.close() replacement."""
+    if _fd_table.is_virtual(fd):
+        _fd_table.close(fd)
+        return
+    _originals["os_close"](fd)
+
+
+def _vfs_os_fstat(fd: int) -> Any:
+    """VFS-aware os.fstat() replacement."""
+    vfd = _fd_table.get(fd)
+    if vfd is not None:
+        size = len(vfd.buffer.getvalue())
+        try:
+            meta = vfd.fs.stat(vfd.path)
+            # Override size with current buffer size (may differ from persisted)
+            from ..base import FileMetadata
+
+            updated = FileMetadata(
+                size=size,
+                created_at=meta.created_at,
+                modified_at=meta.modified_at,
+                is_dir=meta.is_dir,
+            )
+            return _metadata_to_stat_result(updated)
+        except FileNotFoundError:
+            # File not yet persisted — synthesize minimal stat
+            from datetime import datetime, timezone
+
+            from ..base import FileMetadata
+
+            now = datetime.now(timezone.utc).isoformat()
+            return _metadata_to_stat_result(
+                FileMetadata(size=size, created_at=now, modified_at=now)
+            )
+    return _originals["os_fstat"](fd)
+
+
+def _vfs_os_lseek(fd: int, offset: int, whence: int) -> int:
+    """VFS-aware os.lseek() replacement."""
+    vfd = _fd_table.get(fd)
+    if vfd is not None:
+        return vfd.buffer.seek(offset, whence)
+    return _originals["os_lseek"](fd, offset, whence)
