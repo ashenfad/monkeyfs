@@ -28,7 +28,6 @@ from typing import Any, Iterator
 from .base import FileMetadata
 from .context import current_fs
 
-
 # Store original implementations once at import
 _originals: dict[str, Any] = {
     "open": builtins.open,
@@ -78,7 +77,6 @@ try:
     _has_fcntl = True
 except ImportError:
     _has_fcntl = False
-
 
 
 # Define safe system paths for read-only passthrough
@@ -132,9 +130,7 @@ def _require(fs: Any, method: str) -> Any:
     """Get a method from the fs, or raise NotImplementedError if missing."""
     fn = getattr(fs, method, None)
     if fn is None:
-        raise NotImplementedError(
-            f"{type(fs).__name__} does not implement {method}()"
-        )
+        raise NotImplementedError(f"{type(fs).__name__} does not implement {method}()")
     return fn
 
 
@@ -145,18 +141,20 @@ def _fs_list(fs: Any, path: str) -> list[str]:
 
 def _metadata_to_stat_result(meta: FileMetadata) -> os.stat_result:
     """Convert FileMetadata to os.stat_result."""
-    return os.stat_result((
-        meta.st_mode,
-        meta.st_ino,
-        meta.st_dev,
-        meta.st_nlink,
-        meta.st_uid,
-        meta.st_gid,
-        meta.st_size,
-        meta.st_atime,
-        meta.st_mtime,
-        meta.st_ctime,
-    ))
+    return os.stat_result(
+        (
+            meta.st_mode,
+            meta.st_ino,
+            meta.st_dev,
+            meta.st_nlink,
+            meta.st_uid,
+            meta.st_gid,
+            meta.st_size,
+            meta.st_atime,
+            meta.st_mtime,
+            meta.st_ctime,
+        )
+    )
 
 
 # FS-aware wrapper functions
@@ -707,7 +705,9 @@ def _vfs_flock(fd: int, operation: int) -> None:
     return _originals["flock"](fd, operation)
 
 
-def _vfs_lockf(fd: int, cmd: int, length: int = 0, start: int = 0, whence: int = 0) -> Any:
+def _vfs_lockf(
+    fd: int, cmd: int, length: int = 0, start: int = 0, whence: int = 0
+) -> Any:
     """FileSystem-aware fcntl.lockf() replacement — no-op under VFS."""
     if current_fs.get() is not None:
         return None
@@ -916,8 +916,12 @@ def patch(fs: Any) -> Iterator[None]:
     # _USE_CP_SENDFILE: Linux sendfile on raw fds — same issue.
     # _USE_CP_COPY_FILE_RANGE: Python 3.14+ copy_file_range — same issue.
     saved_shutil = {}
-    for flag in ("_use_fd_functions", "_HAS_FCOPYFILE", "_USE_CP_SENDFILE",
-                 "_USE_CP_COPY_FILE_RANGE"):
+    for flag in (
+        "_use_fd_functions",
+        "_HAS_FCOPYFILE",
+        "_USE_CP_SENDFILE",
+        "_USE_CP_COPY_FILE_RANGE",
+    ):
         if hasattr(shutil, flag):
             saved_shutil[flag] = getattr(shutil, flag)
             setattr(shutil, flag, False)

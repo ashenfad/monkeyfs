@@ -11,9 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .context import suspend
-
 from .base import FileInfo, FileMetadata
+from .context import suspend
 
 
 class IsolatedFS:
@@ -77,9 +76,7 @@ class IsolatedFS:
         with suspend():
             if not real_path.is_dir():
                 raise FileNotFoundError(f"No such directory: '{path}'")
-        self._cwd = (
-            "/" + resolved_virtual.lstrip("/") if resolved_virtual else "/"
-        )
+        self._cwd = "/" + resolved_virtual.lstrip("/") if resolved_virtual else "/"
 
     def glob(self, pattern: str) -> list[str]:
         """Return list of paths matching a glob pattern."""
@@ -414,9 +411,7 @@ class IsolatedFS:
                 if target_path.is_absolute():
                     target_path.relative_to(self.root)
             except ValueError:
-                raise PermissionError(
-                    f"Symlink target outside root: {target}"
-                )
+                raise PermissionError(f"Symlink target outside root: {target}")
             return target
 
     def symlink(self, src: str, dst: str) -> None:
@@ -533,4 +528,3 @@ class IsolatedFS:
                 )
 
         return sorted(result, key=lambda x: x.path)
-
