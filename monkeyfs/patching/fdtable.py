@@ -86,10 +86,7 @@ class VirtualFDTable:
         if (flags & os.O_CREAT) and not file_exists:
             parent = os.path.dirname(resolved)
             if parent and parent != "/" and hasattr(fs, "makedirs"):
-                try:
-                    fs.makedirs(parent, exist_ok=True)
-                except (FileExistsError, OSError):
-                    pass
+                fs.makedirs(parent, exist_ok=True)
             from .core import _in_vfs_operation
 
             token = _in_vfs_operation.set(True)
