@@ -32,7 +32,6 @@ dependencies = []
 "Source" = "https://github.com/ashenfad/monkeyfs"
 
 [project.optional-dependencies]
-kv = ["kvgit"]
 dev = [
     "ruff",
     "pre-commit",
