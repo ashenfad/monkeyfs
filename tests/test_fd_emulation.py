@@ -1,6 +1,7 @@
 """Tests for low-level fd emulation (os.open, os.read, os.write, etc.)."""
 
 import os
+import sys
 import tempfile
 import threading
 
@@ -348,6 +349,10 @@ class TestTempfileExtended:
             content = vfs.read(name)
             assert content == b"roundtrip data"
 
+    @pytest.mark.skipif(
+        sys.version_info < (3, 12),
+        reason="_TemporaryFileCloser.cleanup with cached unlink added in 3.12",
+    )
     def test_named_temporary_file_delete_true(self):
         """NamedTemporaryFile(delete=True) cleans up on close."""
         vfs = VirtualFS({})
