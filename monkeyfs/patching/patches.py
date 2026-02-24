@@ -218,6 +218,18 @@ def _vfs_scandir(path: str = ".") -> Any:
     return ScandirWrapper(_scan_gen())
 
 
+def _vfs_glob_scandir(path: str = ".") -> Any:
+    """scandir wrapper for glob._StringGlobber in Python 3.14+.
+
+    Python 3.14 changed glob to expect (entry, name, path) 3-tuples
+    from scandir instead of raw DirEntry objects.
+    """
+    scanner = _vfs_scandir(path)
+    with scanner:
+        entries = list(scanner)
+    return ((e, e.name, e.path) for e in entries)
+
+
 def _vfs_remove(path: str, **kwargs: Any) -> None:
     """FileSystem-aware os.remove() replacement."""
     fs = current_fs.get()

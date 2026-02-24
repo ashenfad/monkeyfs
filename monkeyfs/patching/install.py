@@ -5,6 +5,7 @@ import io
 import os
 import pathlib
 import shutil
+import sys
 import tempfile
 import threading
 from contextlib import contextmanager
@@ -27,6 +28,7 @@ from .patches import (
     _vfs_getcwd,
     _vfs_getenv,
     _vfs_getsize,
+    _vfs_glob_scandir,
     _vfs_isdir,
     _vfs_isfile,
     _vfs_islink,
@@ -217,12 +219,17 @@ def _apply_patches() -> None:
 
     # Patch glob._StringGlobber (Python 3.13+) — caches os.lstat/os.scandir
     # at import time, so we need to point them at our wrappers.
+    # Python 3.14 changed glob to expect (entry, name, path) 3-tuples from
+    # scandir instead of raw DirEntry objects.
     import glob as _glob_mod
 
     if hasattr(_glob_mod, "_StringGlobber"):
         sg = _glob_mod._StringGlobber  # type: ignore
         if hasattr(sg, "scandir"):
-            sg.scandir = staticmethod(_vfs_scandir)
+            if sys.version_info >= (3, 14):
+                sg.scandir = staticmethod(_vfs_glob_scandir)
+            else:
+                sg.scandir = staticmethod(_vfs_scandir)
         if hasattr(sg, "lstat"):
             sg.lstat = staticmethod(_vfs_lstat)
 
@@ -281,6 +288,13 @@ def patch(fs: Any) -> Iterator[None]:
         if hasattr(shutil, flag):
             saved_shutil[flag] = getattr(shutil, flag)
             setattr(shutil, flag, False)
+
+    # Python 3.14+: _rmtree_impl is bound at import time, so setting
+    # _use_fd_functions=False doesn't affect which rmtree runs. Override
+    # _rmtree_impl directly to force the string-path-based implementation.
+    if hasattr(shutil, "_rmtree_impl") and hasattr(shutil, "_rmtree_unsafe"):
+        saved_shutil["_rmtree_impl"] = shutil._rmtree_impl  # type: ignore[attr-defined]
+        shutil._rmtree_impl = shutil._rmtree_unsafe  # type: ignore[attr-defined]
 
     # Reset tempfile's cached tempdir so it re-evaluates inside VFS
     saved_tempdir = tempfile.tempdir
