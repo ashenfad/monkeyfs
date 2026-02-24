@@ -55,7 +55,7 @@ vfs.exists("file.txt")        # True
 vfs.list("/")                  # ["file.txt"]
 ```
 
-Directories are implicit (inferred from file paths, like S3) but can also be created explicitly with `mkdir()`.
+**Directory model:** Directories can be created explicitly with `mkdir()` or implicitly -- any file path like `a/b/file.txt` makes `a/` and `a/b/` visible to `isdir()`, `list()`, and `exists()`. The direct `vfs.write()` method auto-creates parent directories for convenience; patched `open()` does not (raises `FileNotFoundError` on missing parents, matching POSIX). `rmdir()` follows POSIX semantics -- fails on non-empty directories regardless of how they were created.
 
 ### `IsolatedFS(root)`
 
