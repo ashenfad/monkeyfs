@@ -376,9 +376,7 @@ class TestPartialProtocol:
 
             def isdir(self, path):
                 path = self._resolve(path)
-                return path == "/" or any(
-                    f.startswith(path + "/") for f in self._files
-                )
+                return path == "/" or any(f.startswith(path + "/") for f in self._files)
 
             def list(self, path="."):
                 path = self._resolve(path)
@@ -679,8 +677,12 @@ class TestShutilFlagDisabling:
 
         # Capture original values
         originals = {}
-        for flag in ("_use_fd_functions", "_HAS_FCOPYFILE", "_USE_CP_SENDFILE",
-                     "_USE_CP_COPY_FILE_RANGE"):
+        for flag in (
+            "_use_fd_functions",
+            "_HAS_FCOPYFILE",
+            "_USE_CP_SENDFILE",
+            "_USE_CP_COPY_FILE_RANGE",
+        ):
             if hasattr(shutil, flag):
                 originals[flag] = getattr(shutil, flag)
 
@@ -770,7 +772,9 @@ class TestTransitiveCoverage:
         assert walked[0][2] == ["x.txt"]
 
         # Find the 'a' entry and 'a/b' entry
-        a_entries = [w for w in walked if w[0].rstrip("/").endswith("/a") or w[0] == "a"]
+        a_entries = [
+            w for w in walked if w[0].rstrip("/").endswith("/a") or w[0] == "a"
+        ]
         assert len(a_entries) == 1
         assert "top.txt" in a_entries[0][2]
         assert "b" in a_entries[0][1]
