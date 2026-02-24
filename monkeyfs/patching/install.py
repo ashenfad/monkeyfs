@@ -232,6 +232,19 @@ def _apply_patches() -> None:
         _fcntl_mod.flock = _vfs_flock  # type: ignore[assignment]
         _fcntl_mod.lockf = _vfs_lockf  # type: ignore[assignment]
 
+    # Patch tempfile's cached os.unlink reference.
+    # _TemporaryFileCloser.cleanup captures os.unlink as a default arg at
+    # import time, bypassing our runtime patches. Re-bind it so
+    # NamedTemporaryFile(delete=True) cleanup routes through the VFS.
+    if hasattr(tempfile, "_TemporaryFileCloser"):
+        _closer_cls = tempfile._TemporaryFileCloser  # type: ignore[attr-defined]
+        _orig_cleanup = _closer_cls.cleanup
+        defaults = list(_orig_cleanup.__defaults__ or [])
+        # The 'unlink' default is the last positional default
+        if defaults and callable(defaults[-1]):
+            defaults[-1] = _vfs_unlink
+            _orig_cleanup.__defaults__ = tuple(defaults)
+
 
 @contextmanager
 def patch(fs: Any) -> Iterator[None]:
