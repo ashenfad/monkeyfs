@@ -76,14 +76,16 @@ class TestPatchingBasics:
                 assert entry.stat().st_size == 5
 
     def test_utime_patched(self):
-        """Test that os.utime() is patched (no-op for existing files)."""
+        """Test that os.utime() updates VFS metadata."""
         vfs = VirtualFS({})
 
         vfs.write("file.txt", b"content")
 
         with patch(vfs):
-            # Should not raise for existing file
-            os.utime("file.txt", None)
+            os.utime("file.txt", (1577836800, 1577836800))
+
+        meta = vfs.stat("file.txt")
+        assert "2020-01-01" in meta.modified_at
 
     def test_utime_missing_file(self):
         """Test that os.utime() raises for missing files."""

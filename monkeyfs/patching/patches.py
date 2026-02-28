@@ -520,7 +520,7 @@ def _vfs_utime(
     if fs is not None:
         path_str = str(path)
         if fs.exists(path_str):
-            return
+            return _require(fs, "utime")(path_str, times)
         if _is_safe_system_path(path_str):
             return _originals["utime"](path_str, times, **kwargs)
         raise FileNotFoundError(

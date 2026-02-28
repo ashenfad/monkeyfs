@@ -160,3 +160,44 @@ class TestFileMetadata:
         file2 = next(f for f in files if f.name == "file2.txt")
         assert file2.size == 2
         assert file2.path == "dir/file2.txt"
+
+    def test_utime_updates_modified_at(self):
+        """Test that utime() updates modification time in metadata."""
+        vfs = VirtualFS({})
+        vfs.write("file.txt", b"hello")
+
+        original = vfs.stat("file.txt")
+
+        # Set mtime to a known timestamp (2020-01-01 00:00:00 UTC)
+        vfs.utime("file.txt", (1577836800.0, 1577836800.0))
+
+        updated = vfs.stat("file.txt")
+        assert updated.modified_at != original.modified_at
+        assert "2020-01-01" in updated.modified_at
+        assert updated.created_at == original.created_at
+        assert updated.size == original.size
+
+    def test_utime_none_sets_current_time(self):
+        """Test that utime(path, None) updates mtime to current time."""
+        vfs = VirtualFS({})
+        vfs.write("file.txt", b"hello")
+
+        # Set to a past time first
+        vfs.utime("file.txt", (1577836800.0, 1577836800.0))
+        old = vfs.stat("file.txt")
+        assert "2020-01-01" in old.modified_at
+
+        # Now call with None — should update to current time
+        vfs.utime("file.txt", None)
+        new = vfs.stat("file.txt")
+        assert "2020-01-01" not in new.modified_at
+
+    def test_utime_missing_file_raises(self):
+        """Test that utime() raises FileNotFoundError for missing files."""
+        vfs = VirtualFS({})
+
+        try:
+            vfs.utime("missing.txt", None)
+            assert False, "Should have raised FileNotFoundError"
+        except FileNotFoundError:
+            pass

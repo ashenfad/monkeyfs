@@ -1025,6 +1025,49 @@ class VirtualFS:
 
         raise FileNotFoundError(path)
 
+    def utime(
+        self,
+        path: str,
+        times: tuple[float, float] | None = None,
+    ) -> None:
+        """Update access and modification times for a file or directory.
+
+        Args:
+            path: File or directory path.
+            times: (atime, mtime) as float timestamps. If None, uses current time.
+
+        Raises:
+            FileNotFoundError: If path doesn't exist.
+        """
+        if not self.exists(path):
+            raise FileNotFoundError(path)
+
+        path = self._normalize_path(path)
+        metadata = self._get_metadata()
+
+        if times is not None:
+            mtime = datetime.fromtimestamp(times[1], tz=timezone.utc).isoformat()
+        else:
+            mtime = self._now_iso()
+
+        if path in metadata:
+            old = metadata[path]
+            metadata[path] = FileMetadata(
+                size=old.size,
+                created_at=old.created_at,
+                modified_at=mtime,
+                is_dir=old.is_dir,
+            )
+        else:
+            metadata[path] = FileMetadata(
+                size=0,
+                created_at=mtime,
+                modified_at=mtime,
+                is_dir=self.isdir(path),
+            )
+
+        self._set_metadata(metadata)
+
     def list_detailed(self, path: str = ".", recursive: bool = False) -> list[FileInfo]:
         """List directory contents with full file metadata.
 
