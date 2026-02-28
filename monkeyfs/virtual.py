@@ -800,7 +800,13 @@ class VirtualFS:
         self._dir_cache = None
         self._current_size = None
 
-    def mkdir(self, path: str, parents: bool = False, exist_ok: bool = False) -> None:
+    def mkdir(
+        self,
+        path: str,
+        parents: bool = False,
+        exist_ok: bool = False,
+        mode: int = 0o777,
+    ) -> None:
         """Create a directory.
 
         Args:

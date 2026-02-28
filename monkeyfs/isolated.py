@@ -354,11 +354,17 @@ class IsolatedFS:
                 raise IsADirectoryError(f"Is a directory: {path}")
             resolved.unlink()
 
-    def mkdir(self, path: str, parents: bool = False, exist_ok: bool = False) -> None:
+    def mkdir(
+        self,
+        path: str,
+        parents: bool = False,
+        exist_ok: bool = False,
+        mode: int = 0o777,
+    ) -> None:
         """Create a directory."""
         with suspend():
             resolved = self._validate_path(path)
-            resolved.mkdir(parents=parents, exist_ok=exist_ok)
+            resolved.mkdir(mode=mode, parents=parents, exist_ok=exist_ok)
 
     def rmdir(self, path: str) -> None:
         """Remove an empty directory."""
