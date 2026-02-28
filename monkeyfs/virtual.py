@@ -57,6 +57,7 @@ class VirtualFS:
         """
         self._state = state if state is not None else {}
         self._dir_cache: set[str] | None = None
+        self._metadata_cache: dict[str, FileMetadata] | None = None
         self._max_size_bytes: int | None = (
             max_size_mb * 1024 * 1024 if max_size_mb is not None else None
         )
@@ -177,21 +178,31 @@ class VirtualFS:
     def _get_metadata(self) -> dict[str, FileMetadata]:
         """Load metadata dict from state.
 
+        Returns a cached dict on repeated calls. The cache is invalidated
+        by _set_metadata().
+
         Returns:
             Dict mapping normalized paths to FileMetadata objects.
         """
+        if self._metadata_cache is not None:
+            return self._metadata_cache
         metadata_bytes = self._state.get(self.METADATA_KEY)
         if metadata_bytes is None:
-            return {}
-        raw = json.loads(metadata_bytes)
-        return {path: FileMetadata(**fields) for path, fields in raw.items()}
+            self._metadata_cache = {}
+        else:
+            raw = json.loads(metadata_bytes)
+            self._metadata_cache = {
+                path: FileMetadata(**fields) for path, fields in raw.items()
+            }
+        return self._metadata_cache
 
     def _set_metadata(self, metadata: dict[str, FileMetadata]) -> None:
-        """Save metadata dict to state.
+        """Save metadata dict to state and update the cache.
 
         Args:
             metadata: Dict mapping normalized paths to FileMetadata objects.
         """
+        self._metadata_cache = metadata
         raw = {
             path: {
                 "size": m.size,

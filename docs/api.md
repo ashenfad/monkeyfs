@@ -58,6 +58,8 @@ vfs.list("/")                  # ["file.txt"]
 
 **Buffering:** Files opened for writing buffer all content in memory and persist to the backing state on `close()`. `flush()` is a no-op -- there is no incremental persistence. This matches how most in-memory filesystems work but differs from real filesystems where `flush()` pushes data to the OS. For the fd emulation layer (`os.open`/`os.write`), the same applies: content is flushed to VFS on `os.close()`.
 
+**Backing state ownership:** VirtualFS caches parsed metadata in memory for performance. The backing `MutableMapping` should be treated as owned by the VFS instance -- external mutations to the state while the VFS is active may not be reflected.
+
 ### `IsolatedFS(root)`
 
 Real filesystem restricted to a root directory. All paths are resolved within the root; attempts to escape via `..` or symlinks raise `PermissionError`.
