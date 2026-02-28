@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **VFS metadata serialization**: Switched from pickle to JSON
 - **stat() on files without metadata**: Returns synthetic metadata instead of KeyError
+- **stat() synthetic size**: Use actual file size instead of 0 for files without metadata entries
 - **utime**: Updates VFS metadata instead of silently no-oping
 - **readlink**: Validates relative symlink targets stay within sandbox root
 - **mkdir mode**: Passes mode argument through to IsolatedFS

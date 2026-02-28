@@ -81,7 +81,7 @@ class TestFileMetadata:
 
         assert vfs.exists("raw.txt")
         meta = vfs.stat("raw.txt")
-        assert meta.size == 0
+        assert meta.size == 5
         assert meta.is_dir is False
 
     def test_write_many_creates_metadata_for_all(self):
