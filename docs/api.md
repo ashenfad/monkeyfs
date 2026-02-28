@@ -3,7 +3,6 @@
 - [Context managers](#context-managers) -- `patch`, `suspend`
 - [Filesystem implementations](#filesystem-implementations) -- `VirtualFS`, `IsolatedFS`
 - [Protocol & types](#protocol--types) -- `FileSystem`, `FileMetadata`, `FileInfo`
-- [Configuration](#configuration) -- `connect_fs`, config dataclasses
 - [Low-level](#low-level) -- `current_fs`
 - [Patched functions](#patched-functions)
 - [Known limitations](#known-limitations)
@@ -121,25 +120,6 @@ Dataclass returned by `stat()`. Fields: `size`, `created_at`, `modified_at`, `is
 ### `FileInfo`
 
 Dataclass for UI display. Fields: `name`, `path`, `size`, `created_at`, `modified_at`, `is_dir`.
-
-## Configuration
-
-### `connect_fs(type, ...)`
-
-Factory that builds a filesystem from a config dict or keyword arguments:
-
-```python
-from monkeyfs import connect_fs
-
-fs = connect_fs(type="virtual")
-fs = connect_fs(type="isolated", root="/tmp/sandbox")
-```
-
-### Config dataclasses
-
-- `FSConfig` -- base config
-- `VirtualFSConfig` -- config for VirtualFS (size limits, etc.)
-- `IsolatedFSConfig` -- config for IsolatedFS (root directory)
 
 ## Low-level
 
