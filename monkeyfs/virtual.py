@@ -6,8 +6,8 @@ import base64
 import errno
 import fnmatch
 import io
+import json
 import os
-import pickle
 from collections.abc import MutableMapping
 from datetime import datetime, timezone
 
@@ -183,7 +183,8 @@ class VirtualFS:
         metadata_bytes = self._state.get(self.METADATA_KEY)
         if metadata_bytes is None:
             return {}
-        return pickle.loads(metadata_bytes)
+        raw = json.loads(metadata_bytes)
+        return {path: FileMetadata(**fields) for path, fields in raw.items()}
 
     def _set_metadata(self, metadata: dict[str, FileMetadata]) -> None:
         """Save metadata dict to state.
@@ -191,7 +192,16 @@ class VirtualFS:
         Args:
             metadata: Dict mapping normalized paths to FileMetadata objects.
         """
-        self._state[self.METADATA_KEY] = pickle.dumps(metadata)
+        raw = {
+            path: {
+                "size": m.size,
+                "created_at": m.created_at,
+                "modified_at": m.modified_at,
+                "is_dir": m.is_dir,
+            }
+            for path, m in metadata.items()
+        }
+        self._state[self.METADATA_KEY] = json.dumps(raw).encode()
 
     def _get_current_size(self) -> int:
         """Get total size of all files in the VFS.
