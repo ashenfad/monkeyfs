@@ -406,6 +406,9 @@ class IsolatedFS:
                 target_path = Path(target)
                 if target_path.is_absolute():
                     target_path.relative_to(self.root)
+                else:
+                    resolved_target = (unresolved.parent / target_path).resolve()
+                    resolved_target.relative_to(self.root)
             except ValueError:
                 raise PermissionError(f"Symlink target escapes sandbox: '{path}'")
             return target
