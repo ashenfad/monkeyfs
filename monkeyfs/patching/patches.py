@@ -250,7 +250,7 @@ def _vfs_mkdir(path: str, mode: int = 0o777, **kwargs: Any) -> None:
     """FileSystem-aware os.mkdir() replacement."""
     fs = current_fs.get()
     if fs is not None:
-        return fs.mkdir(str(path))
+        return fs.mkdir(str(path), mode=mode)
     return _originals["mkdir"](path, mode, **kwargs)
 
 
