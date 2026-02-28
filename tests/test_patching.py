@@ -621,6 +621,21 @@ class TestIsolatedPatching:
             assert os.path.realpath("./test.txt") == "/test.txt"
             assert os.path.realpath("/test.txt") == "/test.txt"
 
+    def test_isolated_realpath_escape_returns_normalized(self, tmp_path):
+        from monkeyfs import IsolatedFS
+
+        root = tmp_path / "root"
+        root.mkdir()
+
+        isolated = IsolatedFS(str(root))
+
+        with patch(isolated):
+            # Paths that escape the sandbox should return a normalized
+            # absolute path rather than "/" so downstream code gets a
+            # sensible path that simply won't exist in the VFS.
+            assert os.path.realpath("../../etc/passwd") == "/etc/passwd"
+            assert os.path.realpath("/../../outside") == "/outside"
+
     def test_isolated_islink(self, tmp_path):
         from monkeyfs import IsolatedFS
 

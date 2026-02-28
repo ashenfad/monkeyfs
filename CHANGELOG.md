@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **utime**: Updates VFS metadata instead of silently no-oping
 - **readlink**: Validates relative symlink targets stay within sandbox root
 - **mkdir mode**: Passes mode argument through to IsolatedFS
+- **realpath escape fallback**: Return normalized absolute path instead of "/" when path escapes sandbox
 
 ### Changed
 - **Metadata caching**: Parsed metadata cached in memory to avoid repeated JSON deserialization

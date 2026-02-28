@@ -416,7 +416,7 @@ def _vfs_realpath(path: str | os.PathLike[Any], **kwargs: Any) -> str:
         except PermissionError:
             if _is_safe_system_path(path):
                 return _originals["realpath"](path, **kwargs)
-            return "/"
+            return os.path.normpath(os.path.join("/", path_str))
 
     return _originals["realpath"](path, **kwargs)
 
