@@ -1009,7 +1009,10 @@ class VirtualFS:
         if self.isfile(path):
             path = self._normalize_path(path)
             metadata = self._get_metadata()
-            return metadata[path]
+            if path in metadata:
+                return metadata[path]
+            now = datetime.now(timezone.utc).isoformat()
+            return FileMetadata(size=0, created_at=now, modified_at=now)
 
         # Check for directory
         if self.isdir(path):

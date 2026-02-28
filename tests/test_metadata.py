@@ -68,6 +68,22 @@ class TestFileMetadata:
         except FileNotFoundError:
             pass
 
+    def test_stat_file_without_metadata(self):
+        """Test that stat() returns synthetic metadata for files with no metadata entry."""
+        state = {}
+        vfs = VirtualFS(state)
+
+        # Insert a file directly into the backing dict, bypassing write()
+        from monkeyfs.virtual import VirtualFS as _VFS
+
+        key = _VFS._encode_path(vfs, "raw.txt")
+        state[key] = b"hello"
+
+        assert vfs.exists("raw.txt")
+        meta = vfs.stat("raw.txt")
+        assert meta.size == 0
+        assert meta.is_dir is False
+
     def test_write_many_creates_metadata_for_all(self):
         """Test that write_many creates metadata for all files."""
         vfs = VirtualFS({})
