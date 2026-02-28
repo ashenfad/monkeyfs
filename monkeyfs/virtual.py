@@ -772,8 +772,22 @@ class VirtualFS:
         Raises:
             FileNotFoundError: If a file doesn't exist.
         """
+        # Delete from backing state
         for path in paths:
-            self.remove(path)
+            key = self._encode_path(path)
+            if key not in self._state:
+                raise FileNotFoundError(path)
+            del self._state[key]
+
+        # Single metadata round-trip
+        metadata = self._get_metadata()
+        for path in paths:
+            metadata.pop(self._normalize_path(path), None)
+        self._set_metadata(metadata)
+
+        # Invalidate caches
+        self._dir_cache = None
+        self._current_size = None
 
     def mkdir(self, path: str, parents: bool = False, exist_ok: bool = False) -> None:
         """Create a directory.
