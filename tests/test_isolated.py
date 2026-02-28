@@ -610,6 +610,15 @@ class TestIsolatedOptionalMethods:
         target_str = fs.readlink("link.txt")
         assert "target.txt" in target_str
 
+    def test_readlink_blocks_escaping_relative_target(self, tmp_path):
+        """Test readlink rejects relative symlinks that escape the sandbox."""
+        fs = IsolatedFS(str(tmp_path))
+        # Create an escaping relative symlink directly on the real FS
+        link_path = tmp_path / "escape.txt"
+        link_path.symlink_to("../../etc/passwd")
+        with pytest.raises(PermissionError, match="escapes sandbox"):
+            fs.readlink("escape.txt")
+
     def test_symlink_and_islink(self, tmp_path):
         """Test islink returns True for symbolic links."""
         fs = IsolatedFS(str(tmp_path))
