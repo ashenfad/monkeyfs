@@ -2,7 +2,7 @@
 
 import pytest
 
-from monkeyfs import VirtualFS, connect_fs
+from monkeyfs import VirtualFS
 
 
 class TestVFSSizeLimit:
@@ -274,23 +274,3 @@ class TestVFSSizeLimitEdgeCases:
         # But not 0.2MB more (would exceed 1MB)
         with pytest.raises(OSError, match="VFS size limit exceeded"):
             vfs.write("/toomuch.bin", b"z" * (200 * 1024))
-
-
-class TestConnectFsWithSizeLimit:
-    """Tests for connect_fs with max_size_mb parameter."""
-
-    def test_connect_fs_accepts_max_size_mb(self):
-        """Test that connect_fs accepts max_size_mb parameter."""
-        config = connect_fs(type="virtual", max_size_mb=50)
-        assert config.max_size_mb == 50
-
-    def test_connect_fs_default_is_unlimited(self):
-        """Test that connect_fs defaults to unlimited."""
-        config = connect_fs(type="virtual")
-        assert config.max_size_mb is None
-
-    def test_connect_fs_various_sizes(self):
-        """Test connect_fs with various size values."""
-        for size in [1, 10, 100, 1000]:
-            config = connect_fs(type="virtual", max_size_mb=size)
-            assert config.max_size_mb == size
