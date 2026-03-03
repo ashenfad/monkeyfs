@@ -224,31 +224,17 @@ class MountFS:
         result = []
         for name in names:
             full_abs = f"{norm}/{name}" if norm else f"/{name}"
-            is_dir = self.isdir(full_abs)
-            if is_dir:
-                now = self._now_iso()
-                result.append(
-                    FileInfo(
-                        name=name,
-                        path=name,
-                        size=0,
-                        created_at=now,
-                        modified_at=now,
-                        is_dir=True,
-                    )
+            meta = self.stat(full_abs)
+            result.append(
+                FileInfo(
+                    name=name,
+                    path=name,
+                    size=meta.size,
+                    created_at=meta.created_at,
+                    modified_at=meta.modified_at,
+                    is_dir=meta.is_dir,
                 )
-            else:
-                meta = self.stat(full_abs)
-                result.append(
-                    FileInfo(
-                        name=name,
-                        path=name,
-                        size=meta.size,
-                        created_at=meta.created_at,
-                        modified_at=meta.modified_at,
-                        is_dir=False,
-                    )
-                )
+            )
         return result
 
     def access(self, path: str, mode: int) -> bool:
@@ -374,12 +360,16 @@ class MountFS:
         abs_pattern = self._to_absolute(pattern)
         results = set()
 
-        # Glob on base FS
-        for match in self._base.glob(pattern):
-            # Ensure results are absolute
+        # Glob on base FS using absolute pattern (CWD-aware)
+        for match in self._base.glob(abs_pattern):
             if not match.startswith("/"):
                 match = "/" + match
-            results.add(match)
+            # Filter out paths that fall within mount prefixes —
+            # mounts shadow the base FS at their prefix.
+            if not any(
+                match == p or match.startswith(p + "/") for p in self._sorted_prefixes
+            ):
+                results.add(match)
 
         # Glob on each mount
         for prefix, mount_fs in self._mounts.items():
