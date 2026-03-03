@@ -1,7 +1,7 @@
 # API Reference
 
 - [Context managers](#context-managers) -- `patch`, `suspend`
-- [Filesystem implementations](#filesystem-implementations) -- `VirtualFS`, `IsolatedFS`
+- [Filesystem implementations](#filesystem-implementations) -- `VirtualFS`, `IsolatedFS`, `ReadOnlyFS`, `MountFS`
 - [Protocol & types](#protocol--types) -- `FileSystem`, `FileMetadata`, `FileInfo`
 - [Low-level](#low-level) -- `current_fs`
 - [Patched functions](#patched-functions)
@@ -70,6 +70,56 @@ with patch(isolated):
     open("/etc/passwd")  # PermissionError
 ```
 
+### `ReadOnlyFS(fs)`
+
+Wraps any filesystem and blocks all write operations with `PermissionError`. Read operations delegate transparently via `__getattr__`.
+
+```python
+from monkeyfs import VirtualFS, ReadOnlyFS
+
+vfs = VirtualFS({})
+vfs.write("data.csv", b"a,b,c")
+
+ro = ReadOnlyFS(vfs)
+ro.read("data.csv")       # b"a,b,c"
+ro.write("x.txt", b"hi")  # PermissionError: Read-only filesystem
+```
+
+**Blocked operations:** `open` (write/append/exclusive modes), `write`, `write_many`, `remove`, `remove_many`, `mkdir`, `makedirs`, `rename`, `rmdir`, `replace`, `symlink`, `link`, `chmod`, `chown`, `truncate`.
+
+**Allowed operations:** All read operations delegate transparently -- `open` (read mode), `read`, `stat`, `exists`, `isfile`, `isdir`, `list`, `glob`, `getcwd`, `chdir`, etc.
+
+**`access()`:** Returns `False` for `os.W_OK`, delegates for `os.R_OK` and `os.F_OK`.
+
+### `MountFS(base, mounts=None)`
+
+Routes filesystem operations to different backing filesystems based on path prefix. `base` handles all paths not covered by a mount. `mounts` is a dict mapping absolute path prefixes to filesystems.
+
+```python
+from monkeyfs import VirtualFS, MountFS, ReadOnlyFS
+
+base = VirtualFS({})
+chapters = VirtualFS({})
+chapters.write("summary.md", b"# Chapter 1")
+
+fs = MountFS(base, {"/chapters": ReadOnlyFS(chapters)})
+fs.read("/chapters/summary.md")    # b"# Chapter 1"
+fs.write("/app.py", b"print(1)")   # goes to base
+fs.write("/chapters/x.md", b"no")  # PermissionError (read-only mount)
+```
+
+**Dynamic mounts:** `fs.mount("/data", some_fs)` and `fs.unmount("/data")`.
+
+**CWD:** MountFS maintains its own working directory (default `"/"`). Relative paths are resolved against it before routing.
+
+**Directory listing:** `list()` at a directory containing mount points merges entries from the base filesystem with mount-point names. Recursive listing includes contents of mounted filesystems.
+
+**Mount-point existence:** Mount prefixes (and their implicit parents) report as existing directories via `isdir()`, `exists()`, and `stat()`.
+
+**Cross-mount rename:** Files are copied then removed. Directory renames across mount boundaries raise `OSError(errno.EXDEV)`, matching POSIX cross-device semantics.
+
+**Nested mounts:** Supported. A mount at `/a/b` takes priority over `/a` for paths under `/a/b/`.
+
 ## Protocol & types
 
 ### `FileSystem` (Protocol)
@@ -113,7 +163,7 @@ truncate(path, length) -> None  # os.truncate
 
 ### termish compatibility
 
-Both `VirtualFS` and `IsolatedFS` satisfy the [termish](https://github.com/ashenfad/termish) `FileSystem` protocol, which covers direct-use methods (`read`, `write`, `list_detailed`, `glob`, etc.) beyond the patching surface above. This means either can be passed directly to termish's terminal interpreter for shell command execution over the virtual filesystem.
+`VirtualFS`, `IsolatedFS`, `ReadOnlyFS`, and `MountFS` all satisfy the [termish](https://github.com/ashenfad/termish) `FileSystem` protocol, which covers direct-use methods (`read`, `write`, `list_detailed`, `glob`, etc.) beyond the patching surface above. This means any can be passed directly to termish's terminal interpreter for shell command execution over the virtual filesystem.
 
 ### `FileMetadata`
 

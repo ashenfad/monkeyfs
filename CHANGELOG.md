@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **ReadOnlyFS**: Wrapper that blocks all write operations with `PermissionError`. Read operations delegate transparently to the wrapped filesystem.
+- **MountFS**: Routes filesystem operations to different backing filesystems by path prefix. Supports dynamic mount/unmount, own CWD, list merging at mount boundaries, cross-mount rename, nested mounts, and glob across mounts.
+
 ## [0.1.1] - 2026-02-28
 
 ### Fixed
