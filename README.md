@@ -45,6 +45,47 @@ with patch(isolated):
     open("/etc/passwd")           # PermissionError -- outside root
 ```
 
+## ReadOnlyFS
+
+Wraps any filesystem and blocks all write operations:
+
+```python
+from monkeyfs import VirtualFS, ReadOnlyFS, patch
+
+vfs = VirtualFS({})
+vfs.write("data.csv", b"a,b,c")
+
+ro = ReadOnlyFS(vfs)
+with patch(ro):
+    print(open("data.csv").read())  # a,b,c
+    open("new.txt", "w")           # PermissionError
+```
+
+## MountFS
+
+Routes operations to different filesystems by path prefix:
+
+```python
+from monkeyfs import VirtualFS, MountFS, ReadOnlyFS, patch
+
+base = VirtualFS({})
+overlay = VirtualFS({})
+overlay.write("summary.md", b"# Chapter 1")
+
+fs = MountFS(base, {"/chapters": ReadOnlyFS(overlay)})
+
+with patch(fs):
+    # Writes go to base
+    with open("app.py", "w") as f:
+        f.write("print('hi')")
+
+    # Reads from /chapters go to the overlay
+    print(open("/chapters/summary.md").read())  # # Chapter 1
+
+    # Writes to /chapters are blocked (read-only)
+    open("/chapters/new.md", "w")  # PermissionError
+```
+
 ## Documentation
 
 - [API Reference](docs/api.md) -- public API, FileSystem protocol, patched functions
