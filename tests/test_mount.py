@@ -141,6 +141,15 @@ class TestMountFSDirectoryListing:
         chapter_entry = [e for e in entries if e.name == "chapters"][0]
         assert chapter_entry.is_dir
 
+    def test_list_detailed_uses_real_metadata(self):
+        """list_detailed should use actual stat metadata, not synthesized."""
+        fs = MountFS(_make_base(), {"/chapters": _make_mount()})
+        entries = fs.list_detailed("/")
+        file_entry = [e for e in entries if e.name == "readme.txt"][0]
+        assert file_entry.size == 5
+        assert not file_entry.is_dir
+        assert file_entry.created_at is not None
+
     def test_isdir_mount_point(self):
         fs = MountFS(_make_base(), {"/chapters": _make_mount()})
         assert fs.isdir("/chapters")
@@ -341,3 +350,29 @@ class TestMountFSGlob:
         fs = MountFS(_make_base(), {"/chapters": _make_mount()})
         matches = fs.glob("/chapters/*.md")
         assert "/chapters/summary.md" in matches
+
+    def test_glob_relative_with_cwd(self):
+        """Relative glob patterns should resolve against MountFS CWD."""
+        fs = MountFS(_make_base(), {"/chapters": _make_mount()})
+        fs.chdir("/app")
+        matches = fs.glob("*.py")
+        assert "/app/main.py" in matches
+        assert "/app/utils.py" in matches
+
+    def test_glob_relative_in_mount(self):
+        """Relative glob inside a mount should resolve against CWD."""
+        fs = MountFS(_make_base(), {"/chapters": _make_mount()})
+        fs.chdir("/chapters")
+        matches = fs.glob("*.md")
+        assert "/chapters/summary.md" in matches
+
+    def test_glob_base_shadowed_by_mount(self):
+        """Base FS paths under mount prefixes should not appear in results."""
+        base = _make_base()
+        # Write a file in base under the mount prefix path
+        base.write("chapters/ghost.md", b"should be hidden")
+        mount = _make_mount()
+        fs = MountFS(base, {"/chapters": mount})
+        matches = fs.glob("/chapters/*.md")
+        assert "/chapters/summary.md" in matches
+        assert "/chapters/ghost.md" not in matches
