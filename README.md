@@ -86,6 +86,10 @@ with patch(fs):
     open("/chapters/new.md", "w")  # PermissionError
 ```
 
+## Part of the agex stack
+
+monkeyfs provides filesystem interception for [sandtrap](https://github.com/ashenfad/sandtrap) and [agex](https://github.com/ashenfad/agex), giving sandboxed agent code an isolated virtual filesystem. `VirtualFS` accepts any dict-like backing store -- including [kvgit](https://github.com/ashenfad/kvgit) `Staged` instances for a versioned filesystem with commit/rollback.
+
 ## Documentation
 
 - [API Reference](docs/api.md) -- public API, FileSystem protocol, patched functions
