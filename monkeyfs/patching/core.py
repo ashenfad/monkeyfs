@@ -44,7 +44,7 @@ _originals: dict[str, Any] = {
     "access": os.access,
     "readlink": os.readlink,
     "symlink": os.symlink,
-    "link": os.link,
+    **({"link": os.link} if hasattr(os, "link") else {}),
     "chmod": os.chmod,
     "truncate": os.truncate,
     **({"chown": os.chown} if hasattr(os, "chown") else {}),
@@ -86,8 +86,10 @@ def _get_safe_paths() -> list[str]:
     if hasattr(site, "getusersitepackages"):
         paths.add(site.getusersitepackages())
 
-    # Resolve all paths
-    return [str(Path(p).resolve()) for p in paths if os.path.exists(p)]
+    # Resolve all paths (filter None for environments like Pyodide)
+    return [
+        str(Path(p).resolve()) for p in paths if p is not None and os.path.exists(p)
+    ]
 
 
 _SAFE_SYSTEM_PATHS = _get_safe_paths()

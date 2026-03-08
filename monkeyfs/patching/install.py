@@ -107,7 +107,8 @@ def _apply_patches() -> None:
     os.access = _vfs_access  # type: ignore[assignment]
     os.readlink = _vfs_readlink  # type: ignore[assignment]
     os.symlink = _vfs_symlink  # type: ignore[assignment]
-    os.link = _vfs_link  # type: ignore[assignment]
+    if hasattr(os, "link"):
+        os.link = _vfs_link  # type: ignore[assignment]
     os.chmod = _vfs_chmod  # type: ignore[assignment]
     os.truncate = _vfs_truncate  # type: ignore[assignment]
     if hasattr(os, "chown"):
