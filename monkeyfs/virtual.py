@@ -1121,10 +1121,12 @@ class VirtualFS:
         """
         # Get file list from existing list() method
         names = self.list(path, recursive=recursive)
+        user_prefix = path.rstrip("/")
 
-        # Normalize path similar to list() methods to build correct full paths
+        # Normalize for internal lookups (metadata keys are stored without
+        # leading slash).
         normalized_path = path.strip()
-        if normalized_path == "." or normalized_path == "./":
+        if normalized_path in (".", "./"):
             normalized_path = ""
         else:
             normalized_path = normalized_path.strip("/")
@@ -1135,20 +1137,23 @@ class VirtualFS:
         # Build FileInfo objects
         result = []
         for name in names:
-            # Construct full path
+            # Internal key for metadata / isdir lookups
             if not normalized_path:
-                full_path = name
+                internal_path = name
             else:
-                full_path = f"{normalized_path}/{name}"
+                internal_path = f"{normalized_path}/{name}"
+
+            # Display path preserves the user's queried prefix
+            display = f"{user_prefix}/{name}" if user_prefix != "." else name
 
             # Check if it's a directory
-            is_dir = self.isdir(full_path)
+            is_dir = self.isdir(internal_path)
 
             if is_dir:
                 result.append(
                     FileInfo(
                         name=name,
-                        path=full_path,
+                        path=display,
                         size=0,
                         created_at=self._now_iso(),
                         modified_at=self._now_iso(),
@@ -1157,12 +1162,12 @@ class VirtualFS:
                 )
             else:
                 # File - get metadata
-                meta = all_metadata.get(full_path)
+                meta = all_metadata.get(internal_path)
                 if meta:
                     result.append(
                         FileInfo(
                             name=name,
-                            path=full_path,
+                            path=display,
                             size=meta.size,
                             created_at=meta.created_at,
                             modified_at=meta.modified_at,
@@ -1171,12 +1176,12 @@ class VirtualFS:
                     )
                 else:
                     # File exists but has no metadata
-                    content = self.read(full_path)
+                    content = self.read(internal_path)
                     now = self._now_iso()
                     result.append(
                         FileInfo(
                             name=name,
-                            path=full_path,
+                            path=display,
                             size=len(content),
                             created_at=now,
                             modified_at=now,
