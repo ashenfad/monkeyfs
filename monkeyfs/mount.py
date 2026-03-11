@@ -220,15 +220,17 @@ class MountFS:
         names = self.list(path, recursive=recursive)
         abs_path = self._to_absolute(path)
         norm = abs_path.rstrip("/") if abs_path != "/" else ""
+        user_prefix = path.rstrip("/")
 
         result = []
         for name in names:
             full_abs = f"{norm}/{name}" if norm else f"/{name}"
+            display = f"{user_prefix}/{name}" if user_prefix != "." else name
             meta = self.stat(full_abs)
             result.append(
                 FileInfo(
                     name=name,
-                    path=name,
+                    path=display,
                     size=meta.size,
                     created_at=meta.created_at,
                     modified_at=meta.modified_at,

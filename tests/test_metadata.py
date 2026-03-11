@@ -155,11 +155,11 @@ class TestFileMetadata:
 
         file1 = next(f for f in files if f.name == "file1.txt")
         assert file1.size == 1
-        assert file1.path == "dir/file1.txt"
+        assert file1.path == "/dir/file1.txt"
 
         file2 = next(f for f in files if f.name == "file2.txt")
         assert file2.size == 2
-        assert file2.path == "dir/file2.txt"
+        assert file2.path == "/dir/file2.txt"
 
     def test_utime_updates_modified_at(self):
         """Test that utime() updates modification time in metadata."""
