@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-03-12
+
+### Fixed
+- **`list_detailed` path consistency**: `FileInfo.path` now preserves the caller's queried prefix across all implementations — `list_detailed("src/")` returns `path="src/lib/util.py"`, `list_detailed("/")` returns `path="/src/lib/util.py"`, and `list_detailed(".")` returns `path="src/lib/util.py"`. Previously MountFS stripped the queried prefix and VirtualFS stripped the leading slash for root queries.
+
 ## [0.1.3] - 2026-03-08
 
 ### Changed
