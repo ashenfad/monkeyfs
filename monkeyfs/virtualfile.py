@@ -117,7 +117,11 @@ class VirtualFile:
 
         self._closed = True
 
-    def __del__(self) -> None:
+    def __del__(
+        self,
+        _warn=warnings.warn,
+        _ResourceWarning=ResourceWarning,
+    ) -> None:
         """Best-effort flush on garbage collection.
 
         Real file objects persist buffered writes when finalized without an
@@ -126,15 +130,19 @@ class VirtualFile:
         CPython's unclosed-file warning. Explicit close() (or a context
         manager) remains the reliable path -- finalization order during
         interpreter shutdown is not guaranteed.
+
+        ``_warn``/``_ResourceWarning`` are bound as defaults because module
+        globals may already be cleared when finalizers run at interpreter
+        shutdown (the ``subprocess.Popen.__del__`` idiom).
         """
         if getattr(self, "_closed", True):
             return
         try:
             self.close()
-            warnings.warn(
+            _warn(
                 f"unclosed file {self._path!r}; buffered content was "
                 "persisted at garbage collection",
-                ResourceWarning,
+                _ResourceWarning,
                 stacklevel=2,
                 source=self,
             )
