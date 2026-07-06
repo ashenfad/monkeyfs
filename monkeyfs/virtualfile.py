@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import warnings
 from collections.abc import MutableMapping
 from typing import TYPE_CHECKING
 
@@ -115,6 +116,30 @@ class VirtualFile:
         self._vfs.write(self._path, content)
 
         self._closed = True
+
+    def __del__(self) -> None:
+        """Best-effort flush on garbage collection.
+
+        Real file objects persist buffered writes when finalized without an
+        explicit close(); VirtualFile matches that so `open(p, "w").write(x)`
+        does not silently lose data. A ResourceWarning is emitted, mirroring
+        CPython's unclosed-file warning. Explicit close() (or a context
+        manager) remains the reliable path -- finalization order during
+        interpreter shutdown is not guaranteed.
+        """
+        if getattr(self, "_closed", True):
+            return
+        try:
+            self.close()
+            warnings.warn(
+                f"unclosed file {self._path!r}; buffered content was "
+                "persisted at garbage collection",
+                ResourceWarning,
+                stacklevel=2,
+                source=self,
+            )
+        except Exception:
+            pass  # never raise from __del__ (e.g. interpreter teardown)
 
     @property
     def closed(self) -> bool:

@@ -63,6 +63,18 @@ class VirtualFS:
         )
         self._current_size: int | None = None  # Lazy-computed from metadata
 
+    def invalidate(self) -> None:
+        """Drop all lazy caches so subsequent reads hit the state backend.
+
+        Call this after the backing state has been mutated externally
+        (e.g. a versioned store rolled back or reset underneath this
+        instance). The VirtualFS itself invalidates on writes made
+        through it; it cannot see writes made around it.
+        """
+        self._dir_cache = None
+        self._metadata_cache = None
+        self._current_size = None
+
     # -------------------------------------------------------------------------
     # Working Directory
     # -------------------------------------------------------------------------
