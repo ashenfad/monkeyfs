@@ -19,7 +19,7 @@ class VirtualFile:
 
     Attributes:
         path: The virtual filesystem path.
-        mode: The file mode ('w', 'wb', 'a', 'ab').
+        mode: The file mode ('w', 'wb', 'a', 'ab', 'r+', 'rb+').
     """
 
     def __init__(
@@ -52,14 +52,18 @@ class VirtualFile:
         else:
             self._buffer = io.StringIO()
 
-        # For append mode, load existing content
-        if "a" in mode:
+        # Append and read/update modes start with the existing content loaded.
+        if "a" in mode or "r" in mode:
             existing = state.get(key)
             if existing is not None:
                 if "b" in mode:
                     self._buffer.write(existing)
                 else:
                     self._buffer.write(existing.decode("utf-8"))
+
+        # Read/update starts at the beginning; append starts at the end.
+        if "r" in mode:
+            self._buffer.seek(0)
 
     def write(self, data: str | bytes) -> int:
         """Write data to the buffer.
@@ -84,8 +88,12 @@ class VirtualFile:
         self._buffer.writelines(lines)  # type: ignore[arg-type]
 
     def read(self, size: int = -1) -> str | bytes:
-        """Read is not supported for write-only files."""
-        raise io.UnsupportedOperation("read")
+        """Read data from an update-mode file."""
+        if self._closed:
+            raise ValueError(f"I/O operation on closed file: {self._path}")
+        if "+" not in self._mode:
+            raise io.UnsupportedOperation("read")
+        return self._buffer.read(size)
 
     def seek(self, offset: int, whence: int = 0) -> int:
         """Seek to a position in the buffer."""

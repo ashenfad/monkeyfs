@@ -271,6 +271,52 @@ class TestVirtualFSOpen:
         with pytest.raises(FileNotFoundError):
             vfs.open("nonexistent.txt", "r")
 
+    def test_open_text_read_update_overwrites_at_cursor(self):
+        """Text r+ starts at zero and persists in-place writes."""
+        vfs = VirtualFS({})
+        vfs.write("file.txt", b"abcdef")
+
+        with vfs.open("file.txt", "r+") as f:
+            assert f.tell() == 0
+            assert f.read(2) == "ab"
+            assert f.write("XY") == 2
+            assert f.tell() == 4
+            f.seek(0)
+            assert f.read() == "abXYef"
+
+        assert vfs.read("file.txt") == b"abXYef"
+
+    def test_open_binary_read_update_overwrites_at_cursor(self):
+        """Binary rb+ starts at zero and persists in-place writes."""
+        vfs = VirtualFS({})
+        vfs.write("file.bin", b"\x00\x01\x02\x03\x04")
+
+        with vfs.open("file.bin", "rb+") as f:
+            assert f.tell() == 0
+            assert f.read(2) == b"\x00\x01"
+            assert f.write(b"\xaa\xbb") == 2
+            assert f.tell() == 4
+            f.seek(0)
+            assert f.read() == b"\x00\x01\xaa\xbb\x04"
+
+        assert vfs.read("file.bin") == b"\x00\x01\xaa\xbb\x04"
+
+    @pytest.mark.parametrize("mode", ["r+", "rb+"])
+    def test_open_read_update_requires_existing_file(self, mode):
+        """Update mode without creation fails when the file is absent."""
+        vfs = VirtualFS({})
+
+        with pytest.raises(FileNotFoundError):
+            vfs.open("nonexistent", mode)
+
+    @pytest.mark.parametrize("mode", ["+", "q+"])
+    def test_open_invalid_update_mode(self, mode):
+        """A plus sign alone does not turn an invalid mode into a write mode."""
+        vfs = VirtualFS({})
+
+        with pytest.raises(ValueError, match="Invalid mode"):
+            vfs.open("file.txt", mode)
+
 
 class TestVirtualFile:
     """Test VirtualFile class behavior."""
