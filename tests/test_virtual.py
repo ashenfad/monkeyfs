@@ -301,6 +301,98 @@ class TestVirtualFSOpen:
 
         assert vfs.read("file.bin") == b"\x00\x01\xaa\xbb\x04"
 
+    @pytest.mark.parametrize(
+        ("update_mode", "later_mode", "initial", "later"),
+        [
+            ("r+", "w", b"old text", b"new text"),
+            ("rb+", "wb", b"\x00old", b"\x00new"),
+        ],
+    )
+    def test_clean_update_handle_does_not_overwrite_later_writer(
+        self, update_mode, later_mode, initial, later
+    ):
+        """Closing an untouched update snapshot must not restore stale data."""
+        vfs = VirtualFS({})
+        vfs.write("file", initial)
+
+        stale = vfs.open("file", update_mode)
+        assert stale.read()
+
+        with vfs.open("file", later_mode) as current:
+            current.write(later.decode() if later_mode == "w" else later)
+
+        stale.close()
+        assert vfs.read("file") == later
+
+    @pytest.mark.parametrize(
+        ("mode", "content", "lines"),
+        [
+            ("r+", b"one\ntwo\nthree", ["one\n", "two\n", "three"]),
+            ("rb+", b"one\ntwo\nthree", [b"one\n", b"two\n", b"three"]),
+        ],
+    )
+    def test_open_read_update_line_apis(self, mode, content, lines):
+        """Update handles retain line reads and iteration."""
+        vfs = VirtualFS({})
+        vfs.write("file", content)
+
+        with vfs.open("file", mode) as f:
+            assert f.readline() == lines[0]
+            assert f.readlines() == lines[1:]
+            f.seek(0)
+            assert iter(f) is f
+            assert next(f) == lines[0]
+            assert list(f) == lines[1:]
+
+    def test_open_read_update_writelines_generator_persists(self):
+        """A consumed writelines generator still marks the handle dirty."""
+        vfs = VirtualFS({})
+        vfs.write("file", b"")
+
+        with vfs.open("file", "r+") as f:
+            f.writelines(line for line in ["one\n", "two\n"])
+
+        assert vfs.read("file") == b"one\ntwo\n"
+
+    @pytest.mark.parametrize(
+        ("mode", "content", "size", "use_current_position", "expected"),
+        [
+            ("r+", b"abcdef", 3, True, b"abc"),
+            ("rb+", b"\x00\x01\x02\x03", 2, False, b"\x00\x01"),
+        ],
+    )
+    def test_open_read_update_truncate_persists(
+        self, mode, content, size, use_current_position, expected
+    ):
+        """Truncate marks an update handle dirty and persists on close."""
+        vfs = VirtualFS({})
+        vfs.write("file", content)
+
+        with vfs.open("file", mode) as f:
+            if use_current_position:
+                f.seek(size)
+                assert f.truncate() == size
+            else:
+                assert f.truncate(size) == size
+
+        assert vfs.read("file") == expected
+
+    def test_empty_write_modes_preserve_creation_and_truncation(self):
+        """Clean-close optimization retains w/x/a open-time mutations."""
+        vfs = VirtualFS({})
+        vfs.write("truncate.txt", b"old")
+
+        with vfs.open("truncate.txt", "w"):
+            pass
+        with vfs.open("exclusive.txt", "x"):
+            pass
+        with vfs.open("append.txt", "a"):
+            pass
+
+        assert vfs.read("truncate.txt") == b""
+        assert vfs.read("exclusive.txt") == b""
+        assert vfs.read("append.txt") == b""
+
     @pytest.mark.parametrize("mode", ["r+", "rb+"])
     def test_open_read_update_requires_existing_file(self, mode):
         """Update mode without creation fails when the file is absent."""
