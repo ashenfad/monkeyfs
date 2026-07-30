@@ -380,7 +380,7 @@ class VirtualFS:
 
         Args:
             path: File path to open.
-            mode: File mode ('r', 'rb', 'w', 'wb', 'a', 'ab').
+            mode: File mode ('r', 'rb', 'w', 'wb', 'a', 'ab', 'r+', 'rb+').
             **kwargs: Additional arguments (ignored for compatibility).
 
         Returns:
@@ -392,7 +392,13 @@ class VirtualFS:
         """
         key = self._encode_path(path)
 
-        if "r" in mode and "w" not in mode and "a" not in mode and "x" not in mode:
+        if (
+            "r" in mode
+            and "+" not in mode
+            and "w" not in mode
+            and "a" not in mode
+            and "x" not in mode
+        ):
             # Read mode
             content = self._state.get(key)
             if content is None:
@@ -403,8 +409,11 @@ class VirtualFS:
             else:
                 return io.StringIO(content.decode("utf-8"))
 
-        elif "w" in mode or "a" in mode or "x" in mode:
+        elif "w" in mode or "a" in mode or "x" in mode or ("r" in mode and "+" in mode):
             # Write, append, or exclusive creation mode
+            if "r" in mode and "+" in mode and self._state.get(key) is None:
+                raise FileNotFoundError(path)
+
             if "x" in mode and self.exists(path):
                 raise FileExistsError(f"[Errno 17] File exists: '{path}'")
 
