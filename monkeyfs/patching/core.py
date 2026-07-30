@@ -114,7 +114,16 @@ def _is_safe_system_path(path: str | Path) -> bool:
         finally:
             _in_safe_path_check.reset(token)
 
-        return any(path_str.startswith(sp) for sp in _SAFE_SYSTEM_PATHS)
+        path_str = os.path.normcase(path_str)
+        for safe_path in _SAFE_SYSTEM_PATHS:
+            safe_path = os.path.normcase(os.path.normpath(safe_path))
+            try:
+                if os.path.commonpath((path_str, safe_path)) == safe_path:
+                    return True
+            except ValueError:
+                # Different drives on Windows cannot share a common path.
+                continue
+        return False
     except (OSError, ValueError):
         return False
 

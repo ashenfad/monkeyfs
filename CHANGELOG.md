@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **`VirtualFS.open()` update modes**: `r+` and `rb+` now support reading and persist in-place writes instead of silently discarding them.
+- **Safe system path boundaries**: Read-only host passthrough now requires an actual path relationship, so a trusted path such as `/usr/local` no longer also trusts prefix-sharing siblings such as `/usr/local-private`.
 
 ## [v0.1.5] - 2026-07-06
 
