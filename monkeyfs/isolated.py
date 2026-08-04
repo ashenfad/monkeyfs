@@ -361,7 +361,13 @@ class IsolatedFS:
         exist_ok: bool = False,
         mode: int = 0o777,
     ) -> None:
-        """Create a directory."""
+        """Create a directory.
+
+        ``mode`` is an IsolatedFS extension beyond the FileSystem protocol and
+        only applies to direct calls -- patched ``os.mkdir`` does not forward
+        it, so directories created through the patch layer get the default
+        permissions.
+        """
         with suspend():
             resolved = self._validate_path(path)
             resolved.mkdir(mode=mode, parents=parents, exist_ok=exist_ok)
