@@ -200,6 +200,7 @@ current_fs.get()  # None (no patching active)
 
 ## Known limitations
 
+- **`bytes` path results** -- `open()` and `os.open()` accept `bytes` and `os.PathLike` paths and normalize them with `os.fsdecode()` before routing to the filesystem. Operations that *return* paths (`os.listdir()`, `os.scandir()`, `os.readlink()`) return `str` regardless of the argument type, where the stdlib would return `bytes` for a `bytes` argument.
 - **No host directory fds** -- Read-only opens on safe system paths pass through to the host, but `os.open()` on a *directory* raises `IsADirectoryError` while `patch()` is in effect. A directory fd's only real use is as a `dir_fd` (unsupported, below), and a real kernel handle to a host directory outlives the check that granted it. Use `os.listdir()` / `os.scandir()`, which are virtualized and keep the safe-path fallback. File reads are unaffected.
 - **`dir_fd` is unsupported** -- A `dir_fd` (or `src_dir_fd` / `dst_dir_fd`) names a host directory, so the operation would resolve against the real filesystem no matter what the active filesystem says. While `patch()` is in effect, passing one raises `OSError(errno.ENOTSUP)` rather than escaping the filesystem or silently retargeting the call. Outside `patch()`, `dir_fd` behaves normally. Code that probes `os.supports_dir_fd` and falls back to path-based resolution will work unchanged.
 - **C-level syscalls** -- Libraries that call the OS directly from C extensions (e.g. SQLite, `mmap`) bypass Python-level patches entirely. Only Python-level file operations are intercepted.

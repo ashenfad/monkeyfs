@@ -21,6 +21,26 @@ from .core import (
 from .fdtable import _fd_table, _wrap_virtual_fd
 
 
+def _fspath_str(path: Any) -> str | None:
+    """Coerce a path argument to ``str``, or ``None`` if it is not a path.
+
+    ``bytes`` and non-``Path`` ``os.PathLike`` objects are path types the
+    stdlib accepts wherever it accepts ``str``. Matching on ``str``/``Path``
+    alone let them skip interception entirely and reach the host filesystem,
+    so every path type the stdlib honors has to normalize to the same string
+    form before routing.
+
+    Returns ``None`` for ints (file descriptors, handled separately) and for
+    non-path objects, which fall through to the original implementation.
+    """
+    if isinstance(path, int):
+        return None
+    try:
+        return os.fsdecode(path)
+    except TypeError:
+        return None
+
+
 def _vfs_open(path: Any, *args: Any, **kwargs: Any) -> Any:
     """FileSystem-aware open() replacement."""
     mode = args[0] if args else kwargs.get("mode", "r")
@@ -38,12 +58,13 @@ def _vfs_open(path: Any, *args: Any, **kwargs: Any) -> Any:
         }
         return _wrap_virtual_fd(path, mode, _fd_table, **wrap_kwargs)
 
-    if fs is not None and isinstance(path, (str, Path)):
+    path_str = _fspath_str(path)
+    if fs is not None and path_str is not None:
         opener = kwargs.get("opener")
 
         # Opener path (NamedTemporaryFile): let opener call patched os.open
         if opener is not None:
-            fd = opener(str(path), _mode_to_flags(mode))
+            fd = opener(path_str, _mode_to_flags(mode))
             if _fd_table.is_virtual(fd):
                 wrap_kwargs = {
                     k: kwargs[k]
@@ -57,14 +78,14 @@ def _vfs_open(path: Any, *args: Any, **kwargs: Any) -> Any:
 
         token = _in_vfs_operation.set(True)
         try:
-            return fs.open(str(path), mode, **kwargs)
+            return fs.open(path_str, mode, **kwargs)
         except (PermissionError, FileNotFoundError):
             if (
                 "w" not in mode
                 and "a" not in mode
                 and "+" not in mode
                 and "x" not in mode
-                and _is_safe_system_path(path)
+                and _is_safe_system_path(path_str)
             ):
                 return _originals["open"](path, *args, **kwargs)
             raise
@@ -712,9 +733,8 @@ def _vfs_os_open(
         # bypasses both, so it must not be evaluated ahead of them.
         _reject_dir_fd("open", dir_fd=dir_fd)
 
-    if fs is not None and isinstance(path, (str, Path)):
-        path_str = str(path)
-
+    path_str = _fspath_str(path)
+    if fs is not None and path_str is not None:
         # Read-only opens on safe system paths pass through
         is_write = flags & (
             os.O_CREAT | os.O_WRONLY | os.O_RDWR | os.O_TRUNC | os.O_APPEND
