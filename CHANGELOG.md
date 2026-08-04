@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.6] - 2026-08-04
 
 ### Fixed
 - **`VirtualFS.open()` update modes**: `r+` and `rb+` now support reading and persist in-place writes instead of silently discarding them.
@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`dir_fd` no longer escapes the filesystem boundary**: `os.rmdir()` and `os.open()` honored a `dir_fd`, resolving against the host filesystem and bypassing the active filesystem entirely -- including `os.open`'s safe-path and write filters, since its `dir_fd` branch ran ahead of both. A real directory fd is obtainable from inside a patched context via the read-only safe-system-path passthrough, so this chained into arbitrary host reads and writes. Every other patched operation silently dropped `dir_fd`, retargeting the call at a different directory than the caller named. Both behaviors are now replaced by `OSError(errno.ENOTSUP)` for `dir_fd`, `src_dir_fd`, and `dst_dir_fd` across all patched operations while a filesystem is active; outside `patch()`, `dir_fd` is unaffected.
 - **Patched `os.mkdir` no longer forwards `mode`**: The `FileSystem` protocol declares `mkdir(path, parents, exist_ok)`, but the patch layer passed an undeclared `mode=` kwarg, so any backend implementing the interface as documented raised `TypeError` on `os.mkdir()` / `Path.mkdir()`. `mode` is now dropped at the patch boundary, matching what `os.makedirs` already did. `VirtualFS.mkdir()` drops its unused `mode` parameter; `IsolatedFS.mkdir()` keeps it for direct calls, but directories created through patched `os.mkdir` now get default permissions instead of the caller's requested mode.
 
-## [v0.1.5] - 2026-07-06
+## [0.1.5] - 2026-07-06
 
 ### Added
 - **`VirtualFS.invalidate()`**: Public API to drop the lazy dir/metadata/size caches after the backing state mutates externally (e.g. a versioned store rolled back underneath a live instance). Replaces reaching into private attributes.
