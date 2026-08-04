@@ -672,6 +672,29 @@ def _vfs_touch(self: Path, mode: int = 0o666, exist_ok: bool = True) -> None:
 # Low-level fd operation wrappers
 
 
+def _safe_path_open(path_str: str, flags: int, mode: int) -> int:
+    """Read-only host passthrough for safe system paths.
+
+    Refuses directories. A directory fd is useful for almost nothing except
+    serving as a ``dir_fd``, which is rejected outright (see
+    ``_reject_dir_fd``) -- but a real kernel handle to a host directory is a
+    capability that outlives the check that granted it, so anything reaching
+    a raw syscall could still use it. Handing one out contradicts the point
+    of the surrounding filesystem isolation.
+
+    Callers that want to enumerate a directory should use ``os.listdir()`` or
+    ``os.scandir()``, which are virtualized and keep the safe-path fallback.
+    """
+    if _originals["isdir"](path_str):
+        raise IsADirectoryError(
+            errno.EISDIR,
+            "directory file descriptors are not available while a monkeyfs "
+            "filesystem is active",
+            path_str,
+        )
+    return _originals["os_open"](path_str, flags, mode)
+
+
 def _vfs_os_open(
     path: Any, flags: int, mode: int = 0o777, *, dir_fd: Any = None
 ) -> int:
@@ -697,14 +720,14 @@ def _vfs_os_open(
             os.O_CREAT | os.O_WRONLY | os.O_RDWR | os.O_TRUNC | os.O_APPEND
         )
         if not is_write and _is_safe_system_path(path_str):
-            return _originals["os_open"](path_str, flags, mode)
+            return _safe_path_open(path_str, flags, mode)
 
         token = _in_vfs_operation.set(True)
         try:
             return _fd_table.allocate(path_str, fs, flags, mode)
         except (PermissionError, FileNotFoundError):
             if not is_write and _is_safe_system_path(path_str):
-                return _originals["os_open"](path_str, flags, mode)
+                return _safe_path_open(path_str, flags, mode)
             raise
         finally:
             _in_vfs_operation.reset(token)
