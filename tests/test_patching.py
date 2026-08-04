@@ -1,6 +1,8 @@
 """Tests for VirtualFS patching and context manager."""
 
+import errno
 import os
+import sys
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -183,6 +185,98 @@ class TestPatchingBasics:
         with patch(vfs):
             with pytest.raises(FileNotFoundError):
                 os.stat("nonexistent.txt")
+
+
+class TestDirFdRejection:
+    """fd-relative path resolution must fail loudly while a VFS is active.
+
+    A dir_fd names a host kernel object, so the operation resolves against the
+    real filesystem regardless of the active VFS. Honoring it escapes the
+    filesystem boundary; dropping it silently retargets the call at a
+    different directory than the caller named.
+    """
+
+    @staticmethod
+    def _host_dir_fd():
+        """A real directory fd, as sandboxed code could obtain via a safe path."""
+        return os.open(sys.prefix, os.O_RDONLY)
+
+    def test_open_with_dir_fd_cannot_write_to_host(self):
+        """The escape chain: safe-path read fd -> dir_fd write -> host file."""
+        probe_name = "monkeyfs-dir-fd-test-probe.txt"
+        probe = os.path.join(sys.prefix, probe_name)
+        assert not os.path.exists(probe)
+
+        vfs = VirtualFS({})
+        try:
+            with patch(vfs):
+                fd = self._host_dir_fd()
+                try:
+                    with pytest.raises(OSError) as exc:
+                        os.open(probe_name, os.O_CREAT | os.O_WRONLY, 0o644, dir_fd=fd)
+                    assert exc.value.errno == errno.ENOTSUP
+                finally:
+                    os.close(fd)
+            assert not os.path.exists(probe), "dir_fd escaped the VFS onto the host"
+        finally:
+            if os.path.exists(probe):
+                os.remove(probe)
+
+    def test_rmdir_with_dir_fd_does_not_reach_host(self):
+        vfs = VirtualFS({})
+        with patch(vfs):
+            fd = self._host_dir_fd()
+            try:
+                with pytest.raises(OSError) as exc:
+                    os.rmdir("anything", dir_fd=fd)
+                assert exc.value.errno == errno.ENOTSUP
+            finally:
+                os.close(fd)
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            pytest.param(lambda fd: os.mkdir("x", dir_fd=fd), id="mkdir"),
+            pytest.param(lambda fd: os.stat("x", dir_fd=fd), id="stat"),
+            pytest.param(lambda fd: os.lstat("x", dir_fd=fd), id="lstat"),
+            pytest.param(lambda fd: os.unlink("x", dir_fd=fd), id="unlink"),
+            pytest.param(lambda fd: os.remove("x", dir_fd=fd), id="remove"),
+            pytest.param(lambda fd: os.chmod("x", 0o644, dir_fd=fd), id="chmod"),
+            pytest.param(lambda fd: os.utime("x", None, dir_fd=fd), id="utime"),
+            pytest.param(lambda fd: os.readlink("x", dir_fd=fd), id="readlink"),
+            pytest.param(lambda fd: os.symlink("x", "y", dir_fd=fd), id="symlink"),
+            pytest.param(lambda fd: os.rename("x", "y", src_dir_fd=fd), id="rename"),
+            pytest.param(lambda fd: os.replace("x", "y", dst_dir_fd=fd), id="replace"),
+            pytest.param(lambda fd: os.link("x", "y", src_dir_fd=fd), id="link"),
+        ],
+    )
+    def test_dir_fd_rejected_uniformly(self, call):
+        """No patched operation may silently drop or honor a dir_fd."""
+        vfs = VirtualFS({})
+        vfs.write("x", b"content")
+        with patch(vfs):
+            fd = self._host_dir_fd()
+            try:
+                with pytest.raises(OSError) as exc:
+                    call(fd)
+                assert exc.value.errno == errno.ENOTSUP
+            finally:
+                os.close(fd)
+
+    def test_dir_fd_still_works_outside_patch_context(self, tmp_path):
+        """Rejection is scoped to an active VFS -- real dir_fd use is untouched."""
+        fd = os.open(tmp_path, os.O_RDONLY)
+        try:
+            os.mkdir("real", dir_fd=fd)
+            assert (tmp_path / "real").is_dir()
+            os.rmdir("real", dir_fd=fd)
+
+            wfd = os.open("f.txt", os.O_CREAT | os.O_WRONLY, 0o644, dir_fd=fd)
+            os.write(wfd, b"hi")
+            os.close(wfd)
+            assert (tmp_path / "f.txt").read_bytes() == b"hi"
+        finally:
+            os.close(fd)
 
 
 class TestContextIsolation:
