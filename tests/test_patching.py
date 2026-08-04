@@ -337,6 +337,7 @@ class TestPartialProtocol:
             def __init__(self):
                 self._files = {"/test.txt": b"content"}
                 self._cwd = "/"
+                self.mkdir_calls = []
 
             def open(self, path, mode="r", **kwargs):
                 from io import BytesIO, TextIOWrapper
@@ -399,7 +400,7 @@ class TestPartialProtocol:
                 del self._files[path]
 
             def mkdir(self, path, parents=False, exist_ok=False):
-                pass
+                self.mkdir_calls.append((self._resolve(path), parents, exist_ok))
 
             def makedirs(self, path, exist_ok=True):
                 pass
@@ -436,6 +437,32 @@ class TestPartialProtocol:
             assert os.listdir("/") == ["test.txt"]
             stat_result = os.stat("test.txt")
             assert stat_result.st_size == 7
+
+    def test_mkdir_does_not_forward_undeclared_mode(self):
+        """os.mkdir must not pass mode= to a backend implementing the protocol.
+
+        The FileSystem protocol declares mkdir(path, parents, exist_ok) -- a
+        backend written to that signature used to get TypeError because the
+        patch layer forwarded an undeclared mode kwarg.
+        """
+        fs = self._make_minimal_fs()
+        with patch(fs):
+            os.mkdir("/somedir")
+            os.mkdir("/otherdir", 0o700)
+        assert fs.mkdir_calls == [
+            ("/somedir", False, False),
+            ("/otherdir", False, False),
+        ]
+
+    def test_pathlib_mkdir_does_not_forward_undeclared_mode(self):
+        """pathlib passes mode positionally to os.mkdir; it must stop there."""
+        from pathlib import Path
+
+        fs = self._make_minimal_fs()
+        with patch(fs):
+            Path("/a").mkdir()
+            Path("/b").mkdir(mode=0o700, exist_ok=True)
+        assert [call[0] for call in fs.mkdir_calls] == ["/a", "/b"]
 
     def test_rmdir_raises_not_implemented(self):
         fs = self._make_minimal_fs()

@@ -247,10 +247,17 @@ def _vfs_unlink(path: str, **kwargs: Any) -> None:
 
 
 def _vfs_mkdir(path: str, mode: int = 0o777, **kwargs: Any) -> None:
-    """FileSystem-aware os.mkdir() replacement."""
+    """FileSystem-aware os.mkdir() replacement.
+
+    ``mode`` is accepted (pathlib passes it positionally) but not forwarded to
+    the backend: the FileSystem protocol declares ``mkdir(path, parents,
+    exist_ok)``, so forwarding it would break any backend implementing the
+    interface as documented. This matches ``_vfs_makedirs``, which likewise
+    drops ``mode`` when dispatching to a filesystem.
+    """
     fs = current_fs.get()
     if fs is not None:
-        return fs.mkdir(str(path), mode=mode)
+        return fs.mkdir(str(path))
     return _originals["mkdir"](path, mode, **kwargs)
 
 

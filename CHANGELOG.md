@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **`VirtualFS.open()` update modes**: `r+` and `rb+` now support reading and persist in-place writes instead of silently discarding them.
 - **Safe system path boundaries**: Read-only host passthrough now requires an actual path relationship, so a trusted path such as `/usr/local` no longer also trusts prefix-sharing siblings such as `/usr/local-private`.
+- **Patched `os.mkdir` no longer forwards `mode`**: The `FileSystem` protocol declares `mkdir(path, parents, exist_ok)`, but the patch layer passed an undeclared `mode=` kwarg, so any backend implementing the interface as documented raised `TypeError` on `os.mkdir()` / `Path.mkdir()`. `mode` is now dropped at the patch boundary, matching what `os.makedirs` already did. `VirtualFS.mkdir()` drops its unused `mode` parameter; `IsolatedFS.mkdir()` keeps it for direct calls, but directories created through patched `os.mkdir` now get default permissions instead of the caller's requested mode.
 
 ## [v0.1.5] - 2026-07-06
 
