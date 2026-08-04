@@ -15,6 +15,7 @@ from .core import (
     _is_safe_system_path,
     _metadata_to_stat_result,
     _originals,
+    _reject_dir_fd,
     _require,
 )
 from .fdtable import _fd_table, _wrap_virtual_fd
@@ -234,6 +235,7 @@ def _vfs_remove(path: str, **kwargs: Any) -> None:
     """FileSystem-aware os.remove() replacement."""
     fs = current_fs.get()
     if fs is not None:
+        _reject_dir_fd("remove", **kwargs)
         return fs.remove(str(path))
     return _originals["remove"](path, **kwargs)
 
@@ -242,6 +244,7 @@ def _vfs_unlink(path: str, **kwargs: Any) -> None:
     """FileSystem-aware os.unlink() replacement (alias for remove)."""
     fs = current_fs.get()
     if fs is not None:
+        _reject_dir_fd("unlink", **kwargs)
         return fs.remove(str(path))
     return _originals["unlink"](path, **kwargs)
 
@@ -257,6 +260,7 @@ def _vfs_mkdir(path: str, mode: int = 0o777, **kwargs: Any) -> None:
     """
     fs = current_fs.get()
     if fs is not None:
+        _reject_dir_fd("mkdir", **kwargs)
         return fs.mkdir(str(path))
     return _originals["mkdir"](path, mode, **kwargs)
 
@@ -271,12 +275,13 @@ def _vfs_makedirs(path: str, mode: int = 0o777, exist_ok: bool = False) -> None:
 
 def _vfs_rmdir(path: str, *, dir_fd: int | None = None) -> None:
     """FileSystem-aware os.rmdir() replacement."""
-    if dir_fd is not None:
-        return _originals["rmdir"](path, dir_fd=dir_fd)
-
     fs = current_fs.get()
     if fs is not None:
+        _reject_dir_fd("rmdir", dir_fd=dir_fd)
         return _require(fs, "rmdir")(str(path))
+
+    if dir_fd is not None:
+        return _originals["rmdir"](path, dir_fd=dir_fd)
     return _originals["rmdir"](path)
 
 
@@ -284,6 +289,7 @@ def _vfs_rename(src: str, dst: str, **kwargs: Any) -> None:
     """FileSystem-aware os.rename() replacement."""
     fs = current_fs.get()
     if fs is not None:
+        _reject_dir_fd("rename", **kwargs)
         return fs.rename(str(src), str(dst))
     return _originals["rename"](src, dst, **kwargs)
 
@@ -295,6 +301,7 @@ def _vfs_stat(path: str, **kwargs: Any) -> Any:
 
     fs = current_fs.get()
     if fs is not None:
+        _reject_dir_fd("stat", **kwargs)
         path_str = str(path)
         try:
             meta = fs.stat(path_str)
@@ -525,6 +532,7 @@ def _vfs_utime(
     """FileSystem-aware os.utime() replacement."""
     fs = current_fs.get()
     if fs is not None:
+        _reject_dir_fd("utime", **kwargs)
         path_str = str(path)
         if fs.exists(path_str):
             return _require(fs, "utime")(path_str, times)
@@ -541,6 +549,7 @@ def _vfs_replace(src: str, dst: str, **kwargs: Any) -> None:
     """FileSystem-aware os.replace() replacement."""
     fs = current_fs.get()
     if fs is not None:
+        _reject_dir_fd("replace", **kwargs)
         return _require(fs, "replace")(str(src), str(dst))
     return _originals["replace"](src, dst, **kwargs)
 
@@ -549,6 +558,7 @@ def _vfs_access(path: str, mode: int, **kwargs: Any) -> bool:
     """FileSystem-aware os.access() replacement."""
     fs = current_fs.get()
     if fs is not None:
+        _reject_dir_fd("access", **kwargs)
         try:
             return _require(fs, "access")(str(path), mode)
         except (PermissionError, FileNotFoundError):
@@ -565,6 +575,7 @@ def _vfs_readlink(path: str, **kwargs: Any) -> str:
 
     fs = current_fs.get()
     if fs is not None:
+        _reject_dir_fd("readlink", **kwargs)
         try:
             return _require(fs, "readlink")(str(path))
         except (PermissionError, FileNotFoundError, OSError):
@@ -578,6 +589,7 @@ def _vfs_symlink(src: str, dst: str, *args: Any, **kwargs: Any) -> None:
     """FileSystem-aware os.symlink() replacement."""
     fs = current_fs.get()
     if fs is not None:
+        _reject_dir_fd("symlink", **kwargs)
         return _require(fs, "symlink")(str(src), str(dst))
     return _originals["symlink"](src, dst, *args, **kwargs)
 
@@ -586,6 +598,7 @@ def _vfs_link(src: str, dst: str, **kwargs: Any) -> None:
     """FileSystem-aware os.link() replacement."""
     fs = current_fs.get()
     if fs is not None:
+        _reject_dir_fd("link", **kwargs)
         return _require(fs, "link")(str(src), str(dst))
     return _originals["link"](src, dst, **kwargs)
 
@@ -594,6 +607,7 @@ def _vfs_chmod(path: str, mode: int, **kwargs: Any) -> None:
     """FileSystem-aware os.chmod() replacement."""
     fs = current_fs.get()
     if fs is not None:
+        _reject_dir_fd("chmod", **kwargs)
         return _require(fs, "chmod")(str(path), mode)
     return _originals["chmod"](path, mode, **kwargs)
 
@@ -602,6 +616,7 @@ def _vfs_chown(path: str, uid: int, gid: int, **kwargs: Any) -> None:
     """FileSystem-aware os.chown() replacement."""
     fs = current_fs.get()
     if fs is not None:
+        _reject_dir_fd("chown", **kwargs)
         return _require(fs, "chown")(str(path), uid, gid)
     return _originals["chown"](path, uid, gid, **kwargs)
 
@@ -661,13 +676,19 @@ def _vfs_os_open(
     path: Any, flags: int, mode: int = 0o777, *, dir_fd: Any = None
 ) -> int:
     """VFS-aware os.open() replacement."""
-    if dir_fd is not None:
-        return _originals["os_open"](path, flags, mode, dir_fd=dir_fd)
-
+    # Recursion guard first: backend-internal opens are trusted and may
+    # legitimately use dir_fd against the host.
     if _in_vfs_operation.get():
+        if dir_fd is not None:
+            return _originals["os_open"](path, flags, mode, dir_fd=dir_fd)
         return _originals["os_open"](path, flags, mode)
 
     fs = current_fs.get()
+    if fs is not None:
+        # Checked before the safe-path and write filters below -- a dir_fd
+        # bypasses both, so it must not be evaluated ahead of them.
+        _reject_dir_fd("open", dir_fd=dir_fd)
+
     if fs is not None and isinstance(path, (str, Path)):
         path_str = str(path)
 
@@ -688,6 +709,8 @@ def _vfs_os_open(
         finally:
             _in_vfs_operation.reset(token)
 
+    if dir_fd is not None:
+        return _originals["os_open"](path, flags, mode, dir_fd=dir_fd)
     return _originals["os_open"](path, flags, mode)
 
 

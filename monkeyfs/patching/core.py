@@ -1,6 +1,7 @@
 """Patching infrastructure: originals, safe paths, and helpers."""
 
 import builtins
+import errno
 import os
 import os.path
 import site
@@ -126,6 +127,33 @@ def _is_safe_system_path(path: str | Path) -> bool:
         return False
     except (OSError, ValueError):
         return False
+
+
+_DIR_FD_KWARGS = ("dir_fd", "src_dir_fd", "dst_dir_fd")
+
+
+def _reject_dir_fd(op: str, **kwargs: Any) -> None:
+    """Refuse fd-relative path resolution while a filesystem is active.
+
+    A ``dir_fd`` names a host kernel object, so the operation resolves against
+    the real filesystem no matter what the active FileSystem says -- there is
+    no path for monkeyfs to intercept, and a virtual filesystem has no fds the
+    host would accept. Honoring it escapes the filesystem boundary; silently
+    dropping it retargets the call at a different directory than the caller
+    named, which quietly reintroduces the TOCTOU races dir_fd exists to avoid.
+
+    Both are wrong, so fail loudly instead. ``ENOTSUP`` (rather than a
+    permission error) is the accurate signal: this is an operation monkeyfs
+    cannot emulate, and callers that probe ``os.supports_dir_fd`` and fall back
+    to path-based resolution will do the right thing with it.
+    """
+    for name in _DIR_FD_KWARGS:
+        if kwargs.get(name) is not None:
+            raise OSError(
+                errno.ENOTSUP,
+                f"{name} is not supported by os.{op}() while a monkeyfs "
+                "filesystem is active",
+            )
 
 
 def _require(fs: Any, method: str) -> Any:
