@@ -196,13 +196,23 @@ class TestDirFdRejection:
     different directory than the caller named.
     """
 
-    @staticmethod
-    def _host_dir_fd():
-        """A real directory fd, as sandboxed code could obtain via a safe path."""
-        return os.open(sys.prefix, os.O_RDONLY)
+    @pytest.fixture
+    def host_dir_fd(self):
+        """A real directory fd opened before patching.
 
-    def test_open_with_dir_fd_cannot_write_to_host(self):
-        """The escape chain: safe-path read fd -> dir_fd write -> host file."""
+        Obtaining one from *inside* a patched context is refused outright
+        (see TestDirectoryFdRefusal), so this models an fd inherited from
+        before patch() or handed in by host code -- the remaining way one
+        can be present while a filesystem is active.
+        """
+        fd = os.open(sys.prefix, os.O_RDONLY)
+        try:
+            yield fd
+        finally:
+            os.close(fd)
+
+    def test_open_with_dir_fd_cannot_write_to_host(self, host_dir_fd):
+        """The escape chain: host dir fd -> dir_fd write -> host file."""
         probe_name = "monkeyfs-dir-fd-test-probe.txt"
         probe = os.path.join(sys.prefix, probe_name)
         assert not os.path.exists(probe)
@@ -210,28 +220,22 @@ class TestDirFdRejection:
         vfs = VirtualFS({})
         try:
             with patch(vfs):
-                fd = self._host_dir_fd()
-                try:
-                    with pytest.raises(OSError) as exc:
-                        os.open(probe_name, os.O_CREAT | os.O_WRONLY, 0o644, dir_fd=fd)
-                    assert exc.value.errno == errno.ENOTSUP
-                finally:
-                    os.close(fd)
+                with pytest.raises(OSError) as exc:
+                    os.open(
+                        probe_name, os.O_CREAT | os.O_WRONLY, 0o644, dir_fd=host_dir_fd
+                    )
+                assert exc.value.errno == errno.ENOTSUP
             assert not os.path.exists(probe), "dir_fd escaped the VFS onto the host"
         finally:
             if os.path.exists(probe):
                 os.remove(probe)
 
-    def test_rmdir_with_dir_fd_does_not_reach_host(self):
+    def test_rmdir_with_dir_fd_does_not_reach_host(self, host_dir_fd):
         vfs = VirtualFS({})
         with patch(vfs):
-            fd = self._host_dir_fd()
-            try:
-                with pytest.raises(OSError) as exc:
-                    os.rmdir("anything", dir_fd=fd)
-                assert exc.value.errno == errno.ENOTSUP
-            finally:
-                os.close(fd)
+            with pytest.raises(OSError) as exc:
+                os.rmdir("anything", dir_fd=host_dir_fd)
+            assert exc.value.errno == errno.ENOTSUP
 
     @pytest.mark.parametrize(
         "call",
@@ -250,18 +254,14 @@ class TestDirFdRejection:
             pytest.param(lambda fd: os.link("x", "y", src_dir_fd=fd), id="link"),
         ],
     )
-    def test_dir_fd_rejected_uniformly(self, call):
+    def test_dir_fd_rejected_uniformly(self, call, host_dir_fd):
         """No patched operation may silently drop or honor a dir_fd."""
         vfs = VirtualFS({})
         vfs.write("x", b"content")
         with patch(vfs):
-            fd = self._host_dir_fd()
-            try:
-                with pytest.raises(OSError) as exc:
-                    call(fd)
-                assert exc.value.errno == errno.ENOTSUP
-            finally:
-                os.close(fd)
+            with pytest.raises(OSError) as exc:
+                call(host_dir_fd)
+            assert exc.value.errno == errno.ENOTSUP
 
     def test_dir_fd_still_works_outside_patch_context(self, tmp_path):
         """Rejection is scoped to an active VFS -- real dir_fd use is untouched."""
@@ -277,6 +277,46 @@ class TestDirFdRejection:
             assert (tmp_path / "f.txt").read_bytes() == b"hi"
         finally:
             os.close(fd)
+
+
+class TestDirectoryFdRefusal:
+    """The safe-path passthrough must not hand out host directory fds.
+
+    Read-only opens on safe system paths return a real host fd. For a
+    directory that fd is a durable capability -- it outlives the safe-path
+    check that granted it, and anything reaching a raw syscall can still use
+    it. Files keep working; directories do not.
+    """
+
+    def test_cannot_open_safe_path_directory(self):
+        vfs = VirtualFS({})
+        with patch(vfs):
+            with pytest.raises(IsADirectoryError) as exc:
+                os.open(sys.prefix, os.O_RDONLY)
+            assert exc.value.errno == errno.EISDIR
+
+    def test_safe_path_file_reads_still_pass_through(self):
+        """The hardening is scoped to directories -- file reads are unaffected."""
+        host_file = os.path.join(os.path.dirname(os.__file__), "os.py")
+        assert os.path.isfile(host_file)
+
+        vfs = VirtualFS({})
+        with patch(vfs):
+            fd = os.open(host_file, os.O_RDONLY)
+            try:
+                assert os.read(fd, 5)
+            finally:
+                os.close(fd)
+
+    def test_listdir_on_safe_path_still_works(self):
+        """The virtualized enumeration path keeps its safe-path fallback."""
+        vfs = VirtualFS({})
+        with patch(vfs):
+            assert os.listdir(sys.prefix)
+
+    def test_directory_open_outside_patch_context_unaffected(self, tmp_path):
+        fd = os.open(tmp_path, os.O_RDONLY)
+        os.close(fd)
 
 
 class TestContextIsolation:

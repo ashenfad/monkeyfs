@@ -200,6 +200,7 @@ current_fs.get()  # None (no patching active)
 
 ## Known limitations
 
+- **No host directory fds** -- Read-only opens on safe system paths pass through to the host, but `os.open()` on a *directory* raises `IsADirectoryError` while `patch()` is in effect. A directory fd's only real use is as a `dir_fd` (unsupported, below), and a real kernel handle to a host directory outlives the check that granted it. Use `os.listdir()` / `os.scandir()`, which are virtualized and keep the safe-path fallback. File reads are unaffected.
 - **`dir_fd` is unsupported** -- A `dir_fd` (or `src_dir_fd` / `dst_dir_fd`) names a host directory, so the operation would resolve against the real filesystem no matter what the active filesystem says. While `patch()` is in effect, passing one raises `OSError(errno.ENOTSUP)` rather than escaping the filesystem or silently retargeting the call. Outside `patch()`, `dir_fd` behaves normally. Code that probes `os.supports_dir_fd` and falls back to path-based resolution will work unchanged.
 - **C-level syscalls** -- Libraries that call the OS directly from C extensions (e.g. SQLite, `mmap`) bypass Python-level patches entirely. Only Python-level file operations are intercepted.
 - **`fcntl` locking** -- `fcntl`, `flock`, and `lockf` are no-ops under VFS since virtual files have no real file descriptors. Code that depends on advisory locking semantics will not see contention.
