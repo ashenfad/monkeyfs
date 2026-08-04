@@ -187,6 +187,83 @@ class TestPatchingBasics:
                 os.stat("nonexistent.txt")
 
 
+class TestPathTypeNormalization:
+    """Every path type the stdlib accepts must route through the VFS.
+
+    Matching only str/Path let bytes and non-Path os.PathLike arguments skip
+    interception entirely and reach the host filesystem -- a read and write
+    bypass needing nothing but a bytes literal.
+    """
+
+    class Fspath:
+        """A non-Path os.PathLike, as returned by many libraries."""
+
+        def __init__(self, p):
+            self.p = p
+
+        def __fspath__(self):
+            return self.p
+
+    @pytest.fixture
+    def vfs(self):
+        fs = VirtualFS({})
+        fs.write("/f.txt", b"virtual content")
+        return fs
+
+    @pytest.mark.parametrize(
+        "make_path",
+        [
+            pytest.param(lambda p: os.fsencode(p), id="bytes"),
+            pytest.param(lambda p: TestPathTypeNormalization.Fspath(p), id="pathlike"),
+        ],
+    )
+    def test_host_file_not_reachable(self, vfs, make_path):
+        """A host path absent from the VFS must not resolve to the host."""
+        host_file = "/etc/hosts"
+        assert os.path.isfile(host_file), "test needs a readable host file"
+
+        with patch(vfs):
+            with pytest.raises(FileNotFoundError):
+                os.open(make_path(host_file), os.O_RDONLY)
+            with pytest.raises(FileNotFoundError):
+                open(make_path(host_file), "rb")
+
+    @pytest.mark.parametrize(
+        "make_path",
+        [
+            pytest.param(lambda p: os.fsencode(p), id="bytes"),
+            pytest.param(lambda p: TestPathTypeNormalization.Fspath(p), id="pathlike"),
+        ],
+    )
+    def test_reads_route_to_vfs(self, vfs, make_path):
+        with patch(vfs):
+            fd = os.open(make_path("/f.txt"), os.O_RDONLY)
+            try:
+                assert os.read(fd, 100) == b"virtual content"
+            finally:
+                os.close(fd)
+            with open(make_path("/f.txt"), "rb") as f:
+                assert f.read() == b"virtual content"
+
+    def test_writes_land_in_vfs_not_host(self, vfs, tmp_path):
+        """A bytes write to a host-looking path must stay inside the VFS."""
+        target = str(tmp_path / "written.txt")
+        vfs.makedirs(str(tmp_path))  # patched open() needs parents, matching POSIX
+        with patch(vfs):
+            with open(os.fsencode(target), "w") as f:
+                f.write("from the vfs")
+
+        assert not os.path.exists(target), "bytes path escaped onto the host"
+        assert vfs.read(target) == b"from the vfs"
+
+    def test_directory_refusal_covers_bytes(self, vfs):
+        """The directory-fd refusal must not be skippable via a bytes path."""
+        with patch(vfs):
+            with pytest.raises(IsADirectoryError) as exc:
+                os.open(os.fsencode(sys.prefix), os.O_RDONLY)
+            assert exc.value.errno == errno.EISDIR
+
+
 class TestDirFdRejection:
     """fd-relative path resolution must fail loudly while a VFS is active.
 
