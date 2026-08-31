@@ -22,7 +22,7 @@ with patch(vfs):
         f.write("hello")
 ```
 
-Uses `contextvars` so concurrent async tasks each get their own filesystem. Nests correctly -- inner `patch()` blocks override the outer one and restore on exit.
+Uses `contextvars` so concurrent async tasks each get their own filesystem. Nests correctly -- inner `patch()` blocks override the outer one and restore on exit. The `shutil` and `tempfile` shims are process-global rather than per-context and are reference counted: they stay applied while any `patch()` context is live anywhere in the process, and are restored when the last one exits (see [Known limitations](#known-limitations)).
 
 ### `suspend()`
 
@@ -195,13 +195,14 @@ current_fs.get()  # None (no patching active)
 | `pathlib` | `Path.touch`, `Path._globber` (3.13+) |
 | `glob` | `_StringGlobber` (3.13+) |
 | `fcntl` | `fcntl`, `flock`, `lockf` (no-op under VFS; Posix only) |
-| `shutil` | Optimization flags disabled during `patch()` to force string-path code paths |
-| `tempfile` | `tempdir` reset during `patch()` so temp paths resolve inside VFS; `_TemporaryFileCloser` unlink re-bound for `delete=True` cleanup |
+| `shutil` | Optimization flags disabled while any `patch()` context is live, to force string-path code paths (reference counted across overlapping contexts) |
+| `tempfile` | `tempdir` reset while any `patch()` context is live so temp paths resolve inside VFS (reference counted); `_TemporaryFileCloser` unlink re-bound for `delete=True` cleanup |
 
 ## Known limitations
 
 - **`bytes` path results** -- `open()` and `os.open()` accept `bytes` and `os.PathLike` paths and normalize them with `os.fsdecode()` before routing to the filesystem. Operations that *return* paths (`os.listdir()`, `os.scandir()`, `os.readlink()`) return `str` regardless of the argument type, where the stdlib would return `bytes` for a `bytes` argument.
 - **No host directory fds** -- Read-only opens on safe system paths pass through to the host, but `os.open()` on a *directory* raises `IsADirectoryError` while `patch()` is in effect. A directory fd's only real use is as a `dir_fd` (unsupported, below), and a real kernel handle to a host directory outlives the check that granted it. Use `os.listdir()` / `os.scandir()`, which are virtualized and keep the safe-path fallback. File reads are unaffected.
 - **`dir_fd` is unsupported** -- A `dir_fd` (or `src_dir_fd` / `dst_dir_fd`) names a host directory, so the operation would resolve against the real filesystem no matter what the active filesystem says. While `patch()` is in effect, passing one raises `OSError(errno.ENOTSUP)` rather than escaping the filesystem or silently retargeting the call. Outside `patch()`, `dir_fd` behaves normally. Code that probes `os.supports_dir_fd` and falls back to path-based resolution will work unchanged.
+- **`shutil` / `tempfile` shims are process-global** -- The active filesystem is per-context, but the shims that keep `shutil` and `tempfile` on their string-path code paths are module attributes those modules read for themselves, so they cannot be scoped to a context. They are reference counted instead: applied while *any* `patch()` context is live and restored when the last one exits. So code running outside `patch()` -- another thread, or a `suspend()` block -- sees them too while some other context is patched, which makes `shutil.rmtree()` on a host path take the slower string-path route. And `tempfile.tempdir` is a single slot, so concurrent contexts share whichever value `tempfile.gettempdir()` resolved first; the path itself still routes through each context's own filesystem.
 - **C-level syscalls** -- Libraries that call the OS directly from C extensions (e.g. SQLite, `mmap`) bypass Python-level patches entirely. Only Python-level file operations are intercepted.
 - **`fcntl` locking** -- `fcntl`, `flock`, and `lockf` are no-ops under VFS since virtual files have no real file descriptors. Code that depends on advisory locking semantics will not see contention.

@@ -1,8 +1,10 @@
 """Tests for VirtualFS patching and context manager."""
 
+import asyncio
 import errno
 import os
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -1005,6 +1007,175 @@ class TestShutilFlagDisabling:
 
         assert not fs.isfile("mydir/a.txt")
         assert not fs.isfile("mydir/b.txt")
+
+
+class TestPatchReentrancy:
+    """Overlapping patch() contexts must not restore process globals early.
+
+    ``tempfile.tempdir`` and shutil's optimization flags are process-global,
+    not per-context: shutil and tempfile read them from their own module
+    namespace. If an exiting patch() restores them while another context is
+    still live, that live context silently regains the fd-based code paths
+    that bypass the active filesystem.
+    """
+
+    FLAGS = (
+        "_use_fd_functions",
+        "_HAS_FCOPYFILE",
+        "_USE_CP_SENDFILE",
+        "_USE_CP_COPY_FILE_RANGE",
+    )
+
+    @pytest.fixture(autouse=True)
+    def _restore_globals(self):
+        """Keep a failing run from leaking corrupted globals into other tests."""
+        import shutil
+        import tempfile
+
+        saved = {f: getattr(shutil, f) for f in self.FLAGS if hasattr(shutil, f)}
+        if hasattr(shutil, "_rmtree_impl"):
+            saved["_rmtree_impl"] = shutil._rmtree_impl
+        saved_tempdir = tempfile.tempdir
+        try:
+            yield
+        finally:
+            for flag, value in saved.items():
+                setattr(shutil, flag, value)
+            tempfile.tempdir = saved_tempdir
+
+    def _snapshot(self):
+        """Current values of every process-global that patch() touches."""
+        import shutil
+        import tempfile
+
+        snap = {f: getattr(shutil, f) for f in self.FLAGS if hasattr(shutil, f)}
+        if hasattr(shutil, "_rmtree_impl"):
+            snap["_rmtree_impl"] = shutil._rmtree_impl
+        snap["tempdir"] = tempfile.tempdir
+        return snap
+
+    def _assert_patched(self, snap):
+        """Assert a snapshot taken inside a live patch() shows patched values."""
+        import shutil
+
+        for flag in self.FLAGS:
+            if flag in snap:
+                assert snap[flag] is False, (
+                    f"shutil.{flag} was restored while a patch() context was "
+                    f"still live -- fd-based code paths bypass the filesystem"
+                )
+        if "_rmtree_impl" in snap:
+            assert snap["_rmtree_impl"] is shutil._rmtree_unsafe, (
+                "shutil._rmtree_impl was restored while a patch() context was "
+                "still live -- rmtree traverses by fd and bypasses the filesystem"
+            )
+        assert snap["tempdir"] is None, (
+            "tempfile.tempdir was restored while a patch() context was still "
+            "live -- temp paths resolve against the host"
+        )
+
+    def _run_interleaved(self, inner_body, inner_fs=None):
+        """Overlap two patch() contexts across threads, deterministically.
+
+        Ordering, enforced with events (no sleeps): outer enters, inner enters
+        while outer is live, outer exits, ``inner_body(fs)`` runs while inner
+        is still live, inner exits. Returns whatever ``inner_body`` returned.
+        """
+        timeout = 10.0
+        outer_entered = threading.Event()
+        inner_entered = threading.Event()
+        outer_exited = threading.Event()
+        fs = inner_fs if inner_fs is not None else VirtualFS({})
+
+        def outer():
+            try:
+                with patch(VirtualFS({})):
+                    outer_entered.set()
+                    assert inner_entered.wait(timeout), "inner never entered"
+            finally:
+                outer_entered.set()
+                outer_exited.set()
+
+        def inner():
+            try:
+                assert outer_entered.wait(timeout), "outer never entered"
+                with patch(fs):
+                    inner_entered.set()
+                    assert outer_exited.wait(timeout), "outer never exited"
+                    return inner_body(fs)
+            finally:
+                inner_entered.set()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outer_future = pool.submit(outer)
+            inner_future = pool.submit(inner)
+            outer_future.result(timeout=timeout * 2)
+            return inner_future.result(timeout=timeout * 2)
+
+    def test_overlapping_threads_keep_globals_patched(self):
+        """An exiting context must not un-patch globals a live context needs."""
+        self._assert_patched(self._run_interleaved(lambda fs: self._snapshot()))
+
+    def test_overlapping_threads_keep_rmtree_on_the_filesystem(self):
+        """The observable consequence: rmtree must still route through the FS."""
+        import shutil
+
+        fs = VirtualFS({})
+        fs.write("/mydir/a.txt", b"aaa")
+
+        def remove_tree(fs):
+            shutil.rmtree("/mydir")
+
+        self._run_interleaved(remove_tree, inner_fs=fs)
+        assert not fs.isfile("/mydir/a.txt")
+
+    def test_globals_restored_after_overlapping_contexts_exit(self):
+        """Interleaved exits must leave the originals, not stale patched values."""
+        before = self._snapshot()
+        self._run_interleaved(lambda fs: None)
+        assert self._snapshot() == before
+
+    def test_overlapping_async_tasks_keep_globals_patched(self):
+        """patch() advertises async-safety; overlapping tasks must hold too."""
+
+        async def scenario():
+            timeout = 10.0
+            outer_entered = asyncio.Event()
+            inner_entered = asyncio.Event()
+            outer_exited = asyncio.Event()
+
+            async def outer():
+                try:
+                    with patch(VirtualFS({})):
+                        outer_entered.set()
+                        await asyncio.wait_for(inner_entered.wait(), timeout)
+                finally:
+                    outer_entered.set()
+                    outer_exited.set()
+
+            async def inner():
+                try:
+                    await asyncio.wait_for(outer_entered.wait(), timeout)
+                    with patch(VirtualFS({})):
+                        inner_entered.set()
+                        await asyncio.wait_for(outer_exited.wait(), timeout)
+                        return self._snapshot()
+                finally:
+                    inner_entered.set()
+
+            _, snap = await asyncio.gather(outer(), inner())
+            return snap
+
+        self._assert_patched(asyncio.run(scenario()))
+
+    def test_nested_contexts_restore_only_on_outermost_exit(self):
+        """Same-thread nesting: the inner exit must leave the globals patched."""
+        before = self._snapshot()
+        with patch(VirtualFS({})):
+            with patch(VirtualFS({})):
+                pass
+            self._assert_patched(self._snapshot())
+        assert self._snapshot() == before
 
 
 class TestTransitiveCoverage:
