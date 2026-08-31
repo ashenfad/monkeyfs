@@ -65,6 +65,75 @@ from .patches import (
 _lock = threading.Lock()
 _installed = False
 
+# Process-global compatibility shims applied for the duration of patch().
+#
+# Unlike current_fs, these cannot be made per-context: shutil and tempfile read
+# them out of their own module namespace, so the module attribute has to hold
+# the patched value for as long as *any* patch() context is live. They are
+# therefore reference counted -- every patch() applies the same constants, so
+# the first entry saves the originals and the last exit restores them.
+_globals_lock = threading.Lock()
+_active_contexts = 0
+_saved_globals: dict[str, Any] = {}
+
+# shutil optimizations that bypass our patches:
+# _use_fd_functions: rmtree uses os.open/fstat/scandir(fd) — bypasses string-path patches.
+# _HAS_FCOPYFILE: macOS fcopyfile on raw fds — VFS files lack fileno(), wastes try/except.
+# _USE_CP_SENDFILE: Linux sendfile on raw fds — same issue.
+# _USE_CP_COPY_FILE_RANGE: Python 3.14+ copy_file_range — same issue.
+_SHUTIL_FLAGS = (
+    "_use_fd_functions",
+    "_HAS_FCOPYFILE",
+    "_USE_CP_SENDFILE",
+    "_USE_CP_COPY_FILE_RANGE",
+)
+
+
+def _enter_globals() -> None:
+    """Apply the process-global shims, saving originals on the first entry."""
+    global _active_contexts
+    with _globals_lock:
+        first = _active_contexts == 0
+        _active_contexts += 1
+
+        for flag in _SHUTIL_FLAGS:
+            if hasattr(shutil, flag):
+                if first:
+                    _saved_globals[flag] = getattr(shutil, flag)
+                setattr(shutil, flag, False)
+
+        # Python 3.14+: _rmtree_impl is bound at import time, so setting
+        # _use_fd_functions=False doesn't affect which rmtree runs. Override
+        # _rmtree_impl directly to force the string-path-based implementation.
+        if hasattr(shutil, "_rmtree_impl") and hasattr(shutil, "_rmtree_unsafe"):
+            if first:
+                _saved_globals["_rmtree_impl"] = shutil._rmtree_impl  # type: ignore[attr-defined]
+            shutil._rmtree_impl = shutil._rmtree_unsafe  # type: ignore[attr-defined]
+
+        # Reset tempfile's cached tempdir so it re-evaluates inside the VFS.
+        if first:
+            _saved_globals["tempdir"] = tempfile.tempdir
+        tempfile.tempdir = None
+
+
+def _exit_globals() -> None:
+    """Drop a reference, restoring the originals once the last context exits."""
+    global _active_contexts
+    with _globals_lock:
+        _active_contexts -= 1
+        if _active_contexts > 0:
+            return
+        # Clamp rather than trust the counter: a negative count would mean an
+        # unbalanced exit, and restoring twice is harmless once _saved_globals
+        # is cleared.
+        _active_contexts = 0
+
+        if "tempdir" in _saved_globals:
+            tempfile.tempdir = _saved_globals.pop("tempdir")
+        for flag, value in _saved_globals.items():
+            setattr(shutil, flag, value)
+        _saved_globals.clear()
+
 
 def install() -> None:
     """Install FS-aware patches to builtins and os module (idempotent, permanent).
@@ -264,6 +333,12 @@ def patch(fs: Any) -> Iterator[None]:
     Calls install() automatically on first use. It is async-safe —
     concurrent async tasks each get their own context.
 
+    The active filesystem is per-context, but the compatibility shims for
+    shutil and tempfile are process-global (see _enter_globals). They are
+    reference counted, so overlapping contexts in other threads or tasks keep
+    them applied until the last one exits — and are visible process-wide,
+    including to code not running under patch(), while any context is live.
+
     Args:
         fs: Any FileSystem Protocol implementation.
 
@@ -277,41 +352,15 @@ def patch(fs: Any) -> Iterator[None]:
     """
     install()
 
-    # Disable shutil platform optimizations that bypass our patches.
-    # _use_fd_functions: rmtree uses os.open/fstat/scandir(fd) — bypasses string-path patches.
-    # _HAS_FCOPYFILE: macOS fcopyfile on raw fds — VFS files lack fileno(), wastes try/except.
-    # _USE_CP_SENDFILE: Linux sendfile on raw fds — same issue.
-    # _USE_CP_COPY_FILE_RANGE: Python 3.14+ copy_file_range — same issue.
-    saved_shutil = {}
-    for flag in (
-        "_use_fd_functions",
-        "_HAS_FCOPYFILE",
-        "_USE_CP_SENDFILE",
-        "_USE_CP_COPY_FILE_RANGE",
-    ):
-        if hasattr(shutil, flag):
-            saved_shutil[flag] = getattr(shutil, flag)
-            setattr(shutil, flag, False)
-
-    # Python 3.14+: _rmtree_impl is bound at import time, so setting
-    # _use_fd_functions=False doesn't affect which rmtree runs. Override
-    # _rmtree_impl directly to force the string-path-based implementation.
-    if hasattr(shutil, "_rmtree_impl") and hasattr(shutil, "_rmtree_unsafe"):
-        saved_shutil["_rmtree_impl"] = shutil._rmtree_impl  # type: ignore[attr-defined]
-        shutil._rmtree_impl = shutil._rmtree_unsafe  # type: ignore[attr-defined]
-
-    # Reset tempfile's cached tempdir so it re-evaluates inside VFS
-    saved_tempdir = tempfile.tempdir
-    tempfile.tempdir = None
-
-    token = current_fs.set(fs)
+    _enter_globals()
     try:
-        yield
+        token = current_fs.set(fs)
+        try:
+            yield
+        finally:
+            current_fs.reset(token)
     finally:
-        current_fs.reset(token)
-        tempfile.tempdir = saved_tempdir
-        for flag, value in saved_shutil.items():
-            setattr(shutil, flag, value)
+        _exit_globals()
 
 
 def get_current_fs() -> Any | None:

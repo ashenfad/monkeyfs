@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Overlapping `patch()` contexts no longer un-patch each other**: `patch()` saved and restored `tempfile.tempdir` and shutil's `_use_fd_functions`, `_HAS_FCOPYFILE`, `_USE_CP_SENDFILE`, `_USE_CP_COPY_FILE_RANGE` and (3.14+) `_rmtree_impl` in local variables, as if they were per-context like `current_fs`. They are not -- shutil and tempfile read them from their own module namespace, so they are process-global. Two overlapping contexts (concurrent threads, or async tasks in different contexts) therefore had the second one save the *already-patched* values, and the first one to exit restored the originals while the second was still live: that context silently regained shutil's fd-based code paths, where `rmtree` traverses by file descriptor and no longer routes through the active filesystem. Interleaved exits also left the patched values installed process-wide after the last context was gone. The shims are now reference counted under a lock -- the first entry saves the originals, the last exit restores them -- so they hold for as long as any context is live. Because they remain process-global, they are also visible to code running outside `patch()` while another context is active; noted in the docs.
+
 ## [0.1.6] - 2026-08-04
 
 ### Fixed
