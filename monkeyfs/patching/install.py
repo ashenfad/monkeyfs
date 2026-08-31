@@ -111,9 +111,15 @@ def _enter_globals() -> None:
             shutil._rmtree_impl = shutil._rmtree_unsafe  # type: ignore[attr-defined]
 
         # Reset tempfile's cached tempdir so it re-evaluates inside the VFS.
+        # Only on the first entry: gettempdir() caches its answer back into
+        # this slot, so clearing it on a later entry would discard a value an
+        # already-live context resolved -- and that context would not get it
+        # back, since the later exit returns early while it is still active.
+        # One slot means one value; the first resolution wins and every live
+        # context shares it, which is what the docs promise.
         if first:
             _saved_globals["tempdir"] = tempfile.tempdir
-        tempfile.tempdir = None
+            tempfile.tempdir = None
 
 
 def _exit_globals() -> None:
