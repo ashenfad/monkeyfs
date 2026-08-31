@@ -147,7 +147,8 @@ chdir(path) -> None
 
 ```python
 rmdir(path) -> None             # os.rmdir
-islink(path) -> bool            # os.path.islink
+islink(path) -> bool            # os.path.islink, os.scandir, os.lstat
+utime(path, times) -> None      # os.utime, Path.touch
 samefile(p1, p2) -> bool        # os.path.samefile
 realpath(path) -> str           # os.path.realpath
 getsize(path) -> int            # os.path.getsize
@@ -190,7 +191,7 @@ current_fs.get()  # None (no patching active)
 | Module | Functions |
 |--------|-----------|
 | `builtins` / `io` | `open` |
-| `os` | `listdir`, `scandir`, `remove`, `unlink`, `mkdir`, `makedirs`, `rmdir`, `rename`, `replace`, `stat`, `lstat`, `getcwd`, `chdir`, `utime`, `getenv`, `access`, `readlink`, `symlink`, `link`, `chmod`, `chown`, `truncate`, `open`, `read`, `write`, `close`, `fstat`, `lseek` |
+| `os` | `listdir`, `scandir`, `remove`, `unlink`, `mkdir`, `makedirs`, `rmdir`, `rename`, `replace`, `stat`, `lstat`, `getcwd`, `chdir`, `utime`, `getenv`, `access`, `readlink`, `symlink`, `link`, `chmod`, `chflags` (BSD/macOS), `chown`, `truncate`, `open`, `read`, `write`, `close`, `fstat`, `lseek` |
 | `os.path` | `exists`, `isfile`, `isdir`, `islink`, `lexists`, `samefile`, `realpath`, `abspath`, `getsize`, `expanduser`, `expandvars` |
 | `pathlib` | `Path.touch`, `Path._globber` (3.13+) |
 | `glob` | `_StringGlobber` (3.13+) |
@@ -204,5 +205,8 @@ current_fs.get()  # None (no patching active)
 - **No host directory fds** -- Read-only opens on safe system paths pass through to the host, but `os.open()` on a *directory* raises `IsADirectoryError` while `patch()` is in effect. A directory fd's only real use is as a `dir_fd` (unsupported, below), and a real kernel handle to a host directory outlives the check that granted it. Use `os.listdir()` / `os.scandir()`, which are virtualized and keep the safe-path fallback. File reads are unaffected.
 - **`dir_fd` is unsupported** -- A `dir_fd` (or `src_dir_fd` / `dst_dir_fd`) names a host directory, so the operation would resolve against the real filesystem no matter what the active filesystem says. While `patch()` is in effect, passing one raises `OSError(errno.ENOTSUP)` rather than escaping the filesystem or silently retargeting the call. Outside `patch()`, `dir_fd` behaves normally. Code that probes `os.supports_dir_fd` and falls back to path-based resolution will work unchanged.
 - **`shutil` / `tempfile` shims are process-global** -- The active filesystem is per-context, but the shims that keep `shutil` and `tempfile` on their string-path code paths are module attributes those modules read for themselves, so they cannot be scoped to a context. They are reference counted instead: applied while *any* `patch()` context is live and restored when the last one exits. So code running outside `patch()` -- another thread, or a `suspend()` block -- sees them too while some other context is patched, which makes `shutil.rmtree()` on a host path take the slower string-path route. And `tempfile.tempdir` is a single slot, so concurrent contexts share whichever value `tempfile.gettempdir()` resolved first; the path itself still routes through each context's own filesystem.
+- **`os.scandir()` entries are snapshots** -- `os.scandir()` yields a stand-in for `os.DirEntry`, not the real thing. Like the real one it answers from values captured when the entry was produced and never re-consults the filesystem, so a tree that changes mid-iteration is described as it was. `is_dir()`, `is_file()` and `is_symlink()` are faithful, and `follow_symlinks=False` is honored: a symlink is not a directory or a file, which is what keeps `shutil.rmtree()` from recursing through a link. Three gaps remain: `is_junction()` is always `False` (a junction is a Windows NTFS construct, and no backend has one), `inode()` is always `0`, and `isinstance(entry, os.DirEntry)` is `False` -- `os.DirEntry` cannot be subclassed, so stdlib fast paths keyed on that check take their generic branch instead.
+- **`lstat` results are synthesized** -- No backend exposes an `lstat()`, so `os.lstat()`, `os.stat(follow_symlinks=False)`, `Path.is_symlink()` and `DirEntry.stat(follow_symlinks=False)` build the answer for a symlink from the link and its target: the file type is `S_IFLNK` and `st_size` is the length of the target string, but the timestamps, uid and gid are the *target's*, since the link's own are unreachable. Permission bits are `0o777`, as on Linux. When the target cannot be read at all -- a link out of the sandbox, a backend with no `readlink()` -- these fall back to following the link, so confinement errors still surface. A backend that does not implement `islink()` reports no links at all, and every entry describes its target.
+- **`os.chflags()` refuses** -- BSD file flags are not part of the `FileSystem` protocol, so while `patch()` is in effect `os.chflags()` raises `OSError(errno.ENOTSUP)` rather than taking a virtual path to the host. `shutil.copystat()` -- and with it `copy2()` and `copytree()` -- tolerates exactly that errno and carries on.
 - **C-level syscalls** -- Libraries that call the OS directly from C extensions (e.g. SQLite, `mmap`) bypass Python-level patches entirely. Only Python-level file operations are intercepted.
 - **`fcntl` locking** -- `fcntl`, `flock`, and `lockf` are no-ops under VFS since virtual files have no real file descriptors. Code that depends on advisory locking semantics will not see contention.

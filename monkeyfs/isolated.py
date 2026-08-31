@@ -347,8 +347,20 @@ class IsolatedFS:
                 return sorted([p.name for p in resolved.iterdir()])
 
     def remove(self, path: str) -> None:
-        """Remove a file."""
+        """Remove a file, or a symlink itself rather than what it points at.
+
+        ``unlink()`` never follows the final component -- removing a link is
+        how a link is removed. Resolving it first deleted the *target*: with
+        ``shutil.rmtree()`` correctly declining to recurse into a symlinked
+        directory, it unlinks the link instead, and a resolving remove() turned
+        that back into the deletion of a tree outside the one being removed.
+        """
         with suspend():
+            unresolved = self._validate_path_no_follow(path)
+            if unresolved.is_symlink():
+                unresolved.unlink()
+                return
+
             resolved = self._validate_path(path)
             if resolved.is_dir():
                 raise IsADirectoryError(f"Is a directory: {path}")
@@ -401,6 +413,23 @@ class IsolatedFS:
         with suspend():
             resolved = self._validate_path(path)
             os.chown(resolved, uid, gid)
+
+    def utime(
+        self,
+        path: str,
+        times: tuple[float, float] | None = None,
+    ) -> None:
+        """Set access and modification times; ``None`` means now.
+
+        The last of the optional methods the patch layer dispatches to that
+        IsolatedFS did not implement, so ``os.utime()``, ``Path.touch()`` on an
+        existing file, and everything built on ``shutil.copystat()`` --
+        ``copy2()``, ``copytree()`` -- raised ``NotImplementedError`` against
+        an isolated root.
+        """
+        with suspend():
+            resolved = self._validate_path(path)
+            os.utime(resolved, times)
 
     def access(self, path: str, mode: int) -> bool:
         """Check file access permissions."""

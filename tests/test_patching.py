@@ -1053,6 +1053,49 @@ class TestShutilFlagDisabling:
         assert entries["sub"].is_dir()
         assert entries["sub"].is_junction() is False
 
+    def test_shutil_copy2_works_on_an_isolated_root(self, tmp_path):
+        """copy2 copies metadata, so it needs the backend to have utime().
+
+        ``IsolatedFS`` implemented every other optional method the patch layer
+        dispatches to, so ``copystat()`` -- and with it ``copy2()`` and
+        ``copytree()`` -- died on ``NotImplementedError`` against an isolated
+        root.
+        """
+        import shutil
+
+        from monkeyfs import IsolatedFS
+
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "src.txt").write_text("copy me")
+
+        with patch(IsolatedFS(str(root))):
+            shutil.copy2("/src.txt", "/dst.txt")
+
+        assert (root / "dst.txt").read_text() == "copy me"
+
+    @pytest.mark.skipif(not hasattr(os, "chflags"), reason="chflags is BSD/macOS only")
+    def test_chflags_reports_enotsup(self, tmp_path):
+        """BSD file flags have no filesystem to land on -- say so, don't guess.
+
+        Unpatched, ``os.chflags()`` took a virtual path straight to the host.
+        ``shutil.copystat()`` calls it for every symlink
+        ``copytree(symlinks=True)`` recreates and tolerates exactly ENOTSUP.
+        """
+        import errno
+
+        from monkeyfs import IsolatedFS
+
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "f.txt").write_text("x")
+
+        with patch(IsolatedFS(str(root))):
+            with pytest.raises(OSError) as exc:
+                os.chflags("/f.txt", 0)
+
+        assert exc.value.errno == errno.ENOTSUP
+
 
 class TestPatchReentrancy:
     """Overlapping patch() contexts must not restore process globals early.

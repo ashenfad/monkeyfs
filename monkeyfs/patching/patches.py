@@ -9,6 +9,7 @@ from typing import Any, Iterator
 
 from ..context import current_fs
 from .core import (
+    _fs_islink,
     _fs_list,
     _in_safe_path_check,
     _in_vfs_operation,
@@ -17,6 +18,7 @@ from .core import (
     _originals,
     _reject_dir_fd,
     _require,
+    _symlink_stat_result,
 )
 from .fdtable import _fd_table, _wrap_virtual_fd
 
@@ -139,7 +141,17 @@ def _vfs_listdir(path: str = ".") -> list[str]:
 
 
 class MockDirEntry:
-    """Mock os.DirEntry for FS items."""
+    """Mock os.DirEntry for FS items.
+
+    Every answer is captured when ``os.scandir()`` produces the entry, as the
+    real ``os.DirEntry`` does: it caches what the readdir/stat calls told it and
+    never consults the filesystem again. The alternative -- holding a reference
+    to the filesystem and asking on each call -- would keep the backend alive
+    past the ``patch()`` context that created it, and would let a single entry
+    answer ``is_dir()`` and ``is_symlink()`` from two different moments in time.
+    A scandir result is commonly held past the iteration, so matching CPython's
+    staleness is both cheaper and less surprising than inventing fresh answers.
+    """
 
     def __init__(
         self,
@@ -147,20 +159,35 @@ class MockDirEntry:
         is_dir: bool,
         stat_result: os.stat_result | None = None,
         path: str | None = None,
+        is_symlink: bool = False,
+        lstat_result: os.stat_result | None = None,
     ):
         self.name = name
         self.path = path if path is not None else name
         self._is_dir = is_dir
         self._stat = stat_result
+        self._is_symlink = is_symlink
+        self._lstat = lstat_result
 
     def is_dir(self, follow_symlinks: bool = True) -> bool:
-        return self._is_dir
+        """Is this a directory? With ``follow_symlinks=False``, is the *entry*?
+
+        A symlink is never itself a directory, so a link to one answers True
+        only when the link is followed. This is the call ``shutil.rmtree()``
+        makes before recursing, and answering it for the link's target is what
+        let rmtree delete a tree outside the one it was given.
+        """
+        if follow_symlinks:
+            return self._is_dir
+        return self._is_dir and not self._is_symlink
 
     def is_file(self, follow_symlinks: bool = True) -> bool:
-        return not self._is_dir
+        if follow_symlinks:
+            return not self._is_dir
+        return not self._is_dir and not self._is_symlink
 
     def is_symlink(self) -> bool:
-        return False
+        return self._is_symlink
 
     def is_junction(self) -> bool:
         """Always ``False`` -- a filesystem backend has no NTFS junctions.
@@ -179,6 +206,15 @@ class MockDirEntry:
         return False
 
     def stat(self, follow_symlinks: bool = True) -> os.stat_result:
+        """Metadata for the entry; ``follow_symlinks=False`` means lstat.
+
+        ``shutil.copytree()`` reaches this through ``copystat()``. The lstat
+        form is synthesized at scandir time (see ``_symlink_stat_result``)
+        because no backend exposes ``lstat()``; if it could not be built, the
+        target's metadata is returned rather than nothing.
+        """
+        if not follow_symlinks and self._lstat is not None:
+            return self._lstat
         if self._stat is None:
             raise FileNotFoundError(f"No stat available for {self.name}")
         return self._stat
@@ -238,7 +274,21 @@ def _vfs_scandir(path: str = ".") -> Any:
                         meta = fs.stat(child_path)
                         st = _metadata_to_stat_result(meta)
                         is_d = fs.isdir(child_path)
-                        yield MockDirEntry(name, is_d, st, path=child_path)  # type: ignore[misc]
+                        is_link = _fs_islink(fs, child_path)
+                        lst: os.stat_result | None = None
+                        if is_link:
+                            try:
+                                lst = _symlink_stat_result(fs, child_path, st)
+                            except (OSError, NotImplementedError):
+                                lst = None
+                        yield MockDirEntry(  # type: ignore[misc]
+                            name,
+                            is_d,
+                            st,
+                            path=child_path,
+                            is_symlink=is_link,
+                            lstat_result=lst,
+                        )
                     except (FileNotFoundError, OSError):
                         continue
                 return
@@ -332,7 +382,15 @@ def _vfs_rename(src: str, dst: str, **kwargs: Any) -> None:
 
 
 def _vfs_stat(path: str, **kwargs: Any) -> Any:
-    """FileSystem-aware os.stat() replacement."""
+    """FileSystem-aware os.stat() replacement.
+
+    ``follow_symlinks=False`` is honored: it is how ``os.lstat()``,
+    ``Path.is_symlink()`` and ``shutil.copystat()`` ask about the link rather
+    than its target. The result is synthesized, since no backend exposes
+    ``lstat()``; when it cannot be built -- a link whose target escapes the
+    sandbox, a backend without ``readlink()`` -- the call falls through to the
+    follow-the-link path it took before, so confinement errors still surface.
+    """
     if _in_safe_path_check.get():
         return _originals["stat"](path, **kwargs)
 
@@ -342,7 +400,13 @@ def _vfs_stat(path: str, **kwargs: Any) -> Any:
         path_str = str(path)
         try:
             meta = fs.stat(path_str)
-            return _metadata_to_stat_result(meta)
+            target_stat = _metadata_to_stat_result(meta)
+            if not kwargs.get("follow_symlinks", True) and _fs_islink(fs, path_str):
+                try:
+                    return _symlink_stat_result(fs, path_str, target_stat)
+                except (OSError, NotImplementedError):
+                    pass
+            return target_stat
         except PermissionError:
             if _is_safe_system_path(path):
                 return _originals["stat"](path, **kwargs)
@@ -365,8 +429,12 @@ def _vfs_lstat(path: str, **kwargs: Any) -> Any:
 
     fs = current_fs.get()
     if fs is not None:
-        # FS implementations don't distinguish lstat from stat;
-        # delegate to _vfs_stat which handles errno for FileNotFoundError
+        # lstat is stat that does not follow the final symlink, so it is
+        # _vfs_stat's follow_symlinks=False case -- which also gives us its
+        # errno handling for FileNotFoundError. Backends have no lstat(), so
+        # the answer for a link is synthesized there; for everything else this
+        # is the same stat() call as before.
+        kwargs.setdefault("follow_symlinks", False)
         return _vfs_stat(path, **kwargs)
 
     return _originals["lstat"](path, **kwargs)
@@ -656,6 +724,30 @@ def _vfs_chown(path: str, uid: int, gid: int, **kwargs: Any) -> None:
         _reject_dir_fd("chown", **kwargs)
         return _require(fs, "chown")(str(path), uid, gid)
     return _originals["chown"](path, uid, gid, **kwargs)
+
+
+def _vfs_chflags(path: Any, flags: int, **kwargs: Any) -> None:
+    """FileSystem-aware os.chflags() replacement (BSD/macOS only).
+
+    BSD file flags are not part of the FileSystem protocol and no backend
+    carries them, so there is nothing to set while a filesystem is active --
+    and an unpatched ``os.chflags()`` would take a virtual path straight to the
+    host, where it means a different file or none at all.
+
+    ``ENOTSUP`` is both the accurate answer and the one ``shutil.copystat()``
+    is written to tolerate; it swallows exactly ``EOPNOTSUPP``/``ENOTSUP`` here
+    and re-raises everything else. copystat reaches this for every symlink
+    ``copytree(symlinks=True)`` recreates, because that is the one call it
+    makes with ``follow_symlinks=False``.
+    """
+    fs = current_fs.get()
+    if fs is not None:
+        raise OSError(
+            errno.ENOTSUP,
+            "chflags() is not supported while a monkeyfs filesystem is active",
+            str(path),
+        )
+    return _originals["chflags"](path, flags, **kwargs)
 
 
 def _vfs_truncate(path: str, length: int) -> None:
