@@ -1168,6 +1168,42 @@ class TestPatchReentrancy:
 
         self._assert_patched(asyncio.run(scenario()))
 
+    def test_entering_a_context_keeps_an_already_resolved_tempdir(self):
+        """A later entry must not discard a temp directory already resolved.
+
+        ``tempfile.gettempdir()`` caches its answer back into the
+        ``tempfile.tempdir`` slot. Clearing that slot on every entry means a
+        later context's resolution outlives its own exit -- ``_exit_globals()``
+        returns early while another context is live, so the earlier context is
+        left using the later filesystem's temp directory.
+        """
+        import tempfile
+
+        with patch(VirtualFS({})):
+            resolved = tempfile.gettempdir()
+            assert tempfile.tempdir == resolved, "gettempdir() should cache"
+
+            with patch(VirtualFS({})):
+                pass
+
+            assert tempfile.tempdir == resolved, (
+                "entering a nested context cleared the outer context's "
+                "already-resolved tempdir; the outer context will now "
+                "re-resolve against whichever filesystem is live next"
+            )
+
+    def test_overlapping_thread_keeps_an_already_resolved_tempdir(self):
+        """Same single-slot hazard, across threads rather than nesting."""
+        import tempfile
+
+        with patch(VirtualFS({})):
+            resolved = tempfile.gettempdir()
+            self._run_interleaved(lambda fs: None)
+            assert tempfile.tempdir == resolved, (
+                "a concurrent context cleared the live context's resolved "
+                f"tempdir ({resolved!r} -> {tempfile.tempdir!r})"
+            )
+
     def test_nested_contexts_restore_only_on_outermost_exit(self):
         """Same-thread nesting: the inner exit must leave the globals patched."""
         before = self._snapshot()
