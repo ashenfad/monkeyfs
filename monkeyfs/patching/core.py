@@ -60,6 +60,17 @@ _originals: dict[str, Any] = {
     "os_lseek": os.lseek,
 }
 
+# Store extended-attribute originals (Linux only).
+# The four xattr functions are compiled into posixmodule as a unit, so one
+# probe gates all of them -- and on macOS none of them exist, which is exactly
+# why an unpatched os.listxattr() went unnoticed there for so long.
+_has_xattr = hasattr(os, "listxattr")
+if _has_xattr:
+    _originals["listxattr"] = os.listxattr
+    _originals["getxattr"] = os.getxattr
+    _originals["setxattr"] = os.setxattr
+    _originals["removexattr"] = os.removexattr
+
 # Store fcntl originals (Posix only)
 try:
     import fcntl as _fcntl_mod

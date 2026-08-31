@@ -1096,6 +1096,134 @@ class TestShutilFlagDisabling:
 
         assert exc.value.errno == errno.ENOTSUP
 
+    @pytest.mark.skipif(
+        not hasattr(os, "listxattr"), reason="extended attributes are Linux only"
+    )
+    def test_xattr_calls_answer_without_touching_the_host(self, tmp_path):
+        """Extended attributes must not resolve against the real filesystem.
+
+        ``shutil.copystat()`` calls ``os.listxattr()`` through ``_copyxattr()``,
+        which CPython only defines when ``os.listxattr`` exists -- so on macOS
+        the whole path is a no-op and this escape is invisible. On Linux an
+        unpatched ``os.listxattr("/src.txt")`` reached the host and raised
+        ENOENT, which ``_copyxattr()`` does not tolerate, taking ``copy2()``
+        and ``copytree()`` with it.
+
+        Every path used here is absent from the host, so a host syscall would
+        raise ``FileNotFoundError`` instead of the answers asserted below.
+        """
+        from monkeyfs import IsolatedFS
+
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "f.txt").write_text("x")
+
+        with patch(IsolatedFS(str(root))):
+            assert os.listxattr("/f.txt") == []
+            assert os.listxattr("/f.txt", follow_symlinks=False) == []
+            # Not even for a path the filesystem does not have: answering from
+            # the host would describe some other file entirely.
+            assert os.listxattr("/nope.txt") == []
+
+            with pytest.raises(OSError) as get_exc:
+                os.getxattr("/f.txt", "user.thing")
+            assert get_exc.value.errno == errno.ENODATA
+
+            with pytest.raises(OSError) as set_exc:
+                os.setxattr("/f.txt", "user.thing", b"value")
+            assert set_exc.value.errno == errno.ENOTSUP
+
+            with pytest.raises(OSError) as rm_exc:
+                os.removexattr("/f.txt", "user.thing")
+            assert rm_exc.value.errno == errno.ENOTSUP
+
+        # copystat() tolerates ENOTSUP/ENODATA/EINVAL around the listing and
+        # EPERM/EACCES in the copy loop -- and nothing else.
+        assert get_exc.value.errno in (errno.ENOTSUP, errno.ENODATA, errno.EINVAL)
+
+    def test_xattr_shims_are_installed_and_dispatch_on_the_filesystem(
+        self, tmp_path, monkeypatch
+    ):
+        """The wiring check that has to run on every platform, Linux or not.
+
+        The xattr family only exists on Linux, so a skipif'd test leaves a
+        macOS developer blind to the shims being unregistered or dispatching
+        wrongly -- which is how the unpatched ``os.listxattr()`` survived in
+        the first place. This drives the shims directly and fakes the family
+        into ``os`` so the ``install()`` wiring is exercised everywhere.
+        """
+        import importlib
+
+        from monkeyfs import IsolatedFS
+        from monkeyfs.patching import patches
+        from monkeyfs.patching.core import _originals
+
+        # monkeyfs.patching re-exports install(), which shadows the submodule
+        # of the same name on a plain import.
+        install_mod = importlib.import_module("monkeyfs.patching.install")
+
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "f.txt").write_text("x")
+
+        host_calls = []
+
+        def recorder(name, result=None):
+            def fake(*args, **kwargs):
+                host_calls.append((name, args, kwargs))
+                return result
+
+            return fake
+
+        monkeypatch.setitem(_originals, "listxattr", recorder("listxattr", ["user.h"]))
+        monkeypatch.setitem(_originals, "getxattr", recorder("getxattr", b"host"))
+        monkeypatch.setitem(_originals, "setxattr", recorder("setxattr"))
+        monkeypatch.setitem(_originals, "removexattr", recorder("removexattr"))
+
+        with patch(IsolatedFS(str(root))):
+            assert patches._vfs_listxattr("/f.txt") == []
+            for call, expected in (
+                (lambda: patches._vfs_getxattr("/f.txt", "user.thing"), errno.ENODATA),
+                (
+                    lambda: patches._vfs_setxattr("/f.txt", "user.thing", b"v"),
+                    errno.ENOTSUP,
+                ),
+                (
+                    lambda: patches._vfs_removexattr("/f.txt", "user.thing"),
+                    errno.ENOTSUP,
+                ),
+            ):
+                with pytest.raises(OSError) as exc:
+                    call()
+                assert exc.value.errno == expected
+
+        assert host_calls == [], "an active filesystem must not reach host xattrs"
+
+        # With no filesystem active the shims are pass-throughs.
+        assert patches._vfs_listxattr("/f.txt") == ["user.h"]
+        assert patches._vfs_getxattr("/f.txt", "user.thing") == b"host"
+        patches._vfs_setxattr("/f.txt", "user.thing", b"v")
+        patches._vfs_removexattr("/f.txt", "user.thing")
+        assert [name for name, _, _ in host_calls] == [
+            "listxattr",
+            "getxattr",
+            "setxattr",
+            "removexattr",
+        ]
+
+        # And install() actually registers them. On a platform without the
+        # family, fake it in so the registration still gets exercised;
+        # monkeypatch drops the attributes again afterwards.
+        for name in ("listxattr", "getxattr", "setxattr", "removexattr"):
+            monkeypatch.setattr(os, name, recorder(name), raising=False)
+        monkeypatch.setattr(install_mod, "_has_xattr", True)
+        install_mod._apply_patches()
+
+        assert os.listxattr is patches._vfs_listxattr
+        assert os.getxattr is patches._vfs_getxattr
+        assert os.setxattr is patches._vfs_setxattr
+        assert os.removexattr is patches._vfs_removexattr
+
 
 class TestPatchReentrancy:
     """Overlapping patch() contexts must not restore process globals early.

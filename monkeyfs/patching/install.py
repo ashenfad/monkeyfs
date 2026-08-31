@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from ..context import current_fs
-from .core import _fcntl_mod, _has_fcntl, _originals
+from .core import _fcntl_mod, _has_fcntl, _has_xattr, _originals
 from .patches import (
     _vfs_abspath,
     _vfs_access,
@@ -29,6 +29,7 @@ from .patches import (
     _vfs_getcwd,
     _vfs_getenv,
     _vfs_getsize,
+    _vfs_getxattr,
     _vfs_glob_scandir,
     _vfs_isdir,
     _vfs_isfile,
@@ -36,6 +37,7 @@ from .patches import (
     _vfs_lexists,
     _vfs_link,
     _vfs_listdir,
+    _vfs_listxattr,
     _vfs_lockf,
     _vfs_lstat,
     _vfs_makedirs,
@@ -50,11 +52,13 @@ from .patches import (
     _vfs_readlink,
     _vfs_realpath,
     _vfs_remove,
+    _vfs_removexattr,
     _vfs_rename,
     _vfs_replace,
     _vfs_rmdir,
     _vfs_samefile,
     _vfs_scandir,
+    _vfs_setxattr,
     _vfs_stat,
     _vfs_symlink,
     _vfs_touch,
@@ -201,6 +205,14 @@ def _apply_patches() -> None:
     os.chmod = _vfs_chmod  # type: ignore[assignment]
     if hasattr(os, "chflags"):
         os.chflags = _vfs_chflags  # type: ignore[assignment]
+    # Extended attributes are Linux-only, so an unpatched os.listxattr() is
+    # invisible on macOS -- and shutil.copystat() calls it on every copy2()
+    # and copytree() there.
+    if _has_xattr:
+        os.listxattr = _vfs_listxattr  # type: ignore[assignment]
+        os.getxattr = _vfs_getxattr  # type: ignore[assignment]
+        os.setxattr = _vfs_setxattr  # type: ignore[assignment]
+        os.removexattr = _vfs_removexattr  # type: ignore[assignment]
     os.truncate = _vfs_truncate  # type: ignore[assignment]
     if hasattr(os, "chown"):
         os.chown = _vfs_chown  # type: ignore[assignment]
@@ -266,6 +278,10 @@ def _apply_patches() -> None:
     _vfs_link.__name__ = "link"
     _vfs_chmod.__name__ = "chmod"
     _vfs_chflags.__name__ = "chflags"
+    _vfs_listxattr.__name__ = "listxattr"
+    _vfs_getxattr.__name__ = "getxattr"
+    _vfs_setxattr.__name__ = "setxattr"
+    _vfs_removexattr.__name__ = "removexattr"
     _vfs_chown.__name__ = "chown"
     _vfs_truncate.__name__ = "truncate"
     _vfs_fcntl.__name__ = "fcntl"
