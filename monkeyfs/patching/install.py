@@ -18,6 +18,7 @@ from .patches import (
     _vfs_abspath,
     _vfs_access,
     _vfs_chdir,
+    _vfs_chflags,
     _vfs_chmod,
     _vfs_chown,
     _vfs_exists,
@@ -174,6 +175,19 @@ def _apply_patches() -> None:
     os.rename = _vfs_rename  # type: ignore[assignment]
     os.stat = _vfs_stat  # type: ignore[assignment]
     os.lstat = _vfs_lstat  # type: ignore[assignment]
+    # shutil.copystat() decides whether it may pass follow_symlinks= by
+    # membership-testing the function object it finds in os -- so the shim that
+    # replaced os.stat has to be in the set, or copystat substitutes a no-op
+    # that returns None and then dies on `st.st_mode`. That is reachable from
+    # shutil.copytree(symlinks=True), which lands there for every link it
+    # recreates. Only stat() is registered: the os.utime() and os.chmod() shims
+    # still drop follow_symlinks, and degrading those to a no-op is safer than
+    # having copystat retarget them at the link's target.
+    if hasattr(os, "supports_follow_symlinks"):
+        try:
+            os.supports_follow_symlinks.add(_vfs_stat)  # type: ignore[attr-defined]
+        except (AttributeError, TypeError):  # pragma: no cover - frozen set
+            pass
     os.scandir = _vfs_scandir  # type: ignore[assignment]
     os.getcwd = _vfs_getcwd  # type: ignore[assignment]
     os.chdir = _vfs_chdir  # type: ignore[assignment]
@@ -185,6 +199,8 @@ def _apply_patches() -> None:
     if hasattr(os, "link"):
         os.link = _vfs_link  # type: ignore[assignment]
     os.chmod = _vfs_chmod  # type: ignore[assignment]
+    if hasattr(os, "chflags"):
+        os.chflags = _vfs_chflags  # type: ignore[assignment]
     os.truncate = _vfs_truncate  # type: ignore[assignment]
     if hasattr(os, "chown"):
         os.chown = _vfs_chown  # type: ignore[assignment]
@@ -249,6 +265,7 @@ def _apply_patches() -> None:
     _vfs_symlink.__name__ = "symlink"
     _vfs_link.__name__ = "link"
     _vfs_chmod.__name__ = "chmod"
+    _vfs_chflags.__name__ = "chflags"
     _vfs_chown.__name__ = "chown"
     _vfs_truncate.__name__ = "truncate"
     _vfs_fcntl.__name__ = "fcntl"

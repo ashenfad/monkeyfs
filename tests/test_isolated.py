@@ -601,6 +601,35 @@ class TestIsolatedOptionalMethods:
         assert fs.getsize("data.txt") == 0
         assert fs.read("data.txt") == b""
 
+    def test_utime_sets_times(self, tmp_path):
+        """utime() was the one dispatched method IsolatedFS never implemented."""
+        fs = IsolatedFS(str(tmp_path))
+        fs.write("data.txt", b"content")
+        fs.utime("data.txt", (1577836800.0, 1577836800.0))
+        assert (tmp_path / "data.txt").stat().st_mtime == 1577836800.0
+
+    def test_utime_none_uses_now(self, tmp_path):
+        fs = IsolatedFS(str(tmp_path))
+        fs.write("data.txt", b"content")
+        os.utime(tmp_path / "data.txt", (1577836800.0, 1577836800.0))
+        fs.utime("data.txt", None)
+        assert (tmp_path / "data.txt").stat().st_mtime > 1577836800.0
+
+    def test_utime_missing_file_raises(self, tmp_path):
+        fs = IsolatedFS(str(tmp_path))
+        with pytest.raises(FileNotFoundError):
+            fs.utime("missing.txt", None)
+
+    def test_remove_symlink_removes_the_link_not_the_target(self, tmp_path):
+        """unlink() never follows the final component."""
+        fs = IsolatedFS(str(tmp_path))
+        fs.write("target.txt", b"target data")
+        fs.symlink("target.txt", "link.txt")
+        fs.remove("link.txt")
+        assert (tmp_path / "target.txt").is_file(), "remove() deleted the link target"
+        assert (tmp_path / "target.txt").read_bytes() == b"target data"
+        assert not (tmp_path / "link.txt").is_symlink(), "the link itself survived"
+
     def test_symlink_and_readlink(self, tmp_path):
         """Test symlink creation and readlink."""
         fs = IsolatedFS(str(tmp_path))

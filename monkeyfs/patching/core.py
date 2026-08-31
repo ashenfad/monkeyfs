@@ -5,6 +5,7 @@ import errno
 import os
 import os.path
 import site
+import stat
 import sys
 from contextvars import ContextVar
 from pathlib import Path
@@ -47,6 +48,7 @@ _originals: dict[str, Any] = {
     "symlink": os.symlink,
     **({"link": os.link} if hasattr(os, "link") else {}),
     "chmod": os.chmod,
+    **({"chflags": os.chflags} if hasattr(os, "chflags") else {}),
     "truncate": os.truncate,
     **({"chown": os.chown} if hasattr(os, "chown") else {}),
     # Low-level fd operations
@@ -167,6 +169,71 @@ def _require(fs: Any, method: str) -> Any:
 def _fs_list(fs: Any, path: str) -> list[str]:
     """List directory children via fs.list()."""
     return fs.list(path)
+
+
+def _fs_islink(fs: Any, path: str) -> bool:
+    """Ask the filesystem whether ``path`` is a symlink, leniently.
+
+    ``islink()`` is not part of the ``FileSystem`` protocol -- it is one of the
+    optional methods -- so a backend written to the documented interface may
+    not have it. Callers here are answering "is this a link?" on paths they are
+    about to describe rather than mutate, and a missing method means the
+    backend has no links at all, so the honest answer is ``False``. Raising
+    ``NotImplementedError`` (as ``os.path.islink()`` does, where the caller
+    asked the question directly) would take out ``os.scandir()`` and
+    ``os.lstat()`` for those backends instead.
+    """
+    fn = getattr(fs, "islink", None)
+    if fn is None:
+        return False
+    try:
+        return bool(fn(path))
+    except OSError:
+        # os.path.islink() answers False for anything it cannot look at; a
+        # backend refusing the path (an escaping link, a missing parent) is
+        # not evidence that a link is there.
+        return False
+
+
+def _symlink_stat_result(fs: Any, path: str, target: os.stat_result) -> os.stat_result:
+    """Synthesize an ``lstat``-style ``stat_result`` for a symlink.
+
+    No backend exposes ``lstat()``, so the link's own metadata cannot be read.
+    What consumers actually branch on is the file type -- ``stat.S_ISLNK()`` --
+    and the alternative is to keep reporting the *target's* type, which is the
+    same lie that made ``rmtree`` walk through links. So the type bits are
+    ``S_IFLNK`` and the rest is derived from the link target:
+
+    * ``st_size`` is the length of the target string, which is what a real
+      ``lstat()`` reports for a symlink;
+    * timestamps, uid and gid are the target's, since the link has none we can
+      reach. They are approximations, and the only fields here that are.
+
+    Permission bits are ``0o777``, matching a real symlink on Linux (where they
+    are meaningless and always fully open). ``copystat()`` would only apply
+    them to the link itself, and neither ``chmod`` nor ``lchmod`` is reachable
+    with ``follow_symlinks=False`` through the patch layer.
+
+    Raises if the link target cannot be read (``OSError`` for a link out of
+    the sandbox, ``NotImplementedError`` for a backend with no ``readlink()``).
+    Callers fall back to their follow-the-link behavior, which keeps
+    confinement errors intact for links pointing out of the sandbox.
+    """
+    link_target = _require(fs, "readlink")(path)
+    return os.stat_result(
+        (
+            stat.S_IFLNK | 0o777,
+            0,
+            0,
+            1,
+            target.st_uid,
+            target.st_gid,
+            len(os.fsencode(link_target)),
+            target.st_atime,
+            target.st_mtime,
+            target.st_ctime,
+        )
+    )
 
 
 def _metadata_to_stat_result(meta: FileMetadata) -> os.stat_result:
