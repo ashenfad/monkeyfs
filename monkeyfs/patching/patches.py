@@ -750,6 +750,97 @@ def _vfs_chflags(path: Any, flags: int, **kwargs: Any) -> None:
     return _originals["chflags"](path, flags, **kwargs)
 
 
+# Extended attributes (Linux only).
+#
+# No backend stores them and none can -- xattrs are not part of the
+# ``FileSystem`` protocol -- so, left unpatched, ``os.listxattr()`` and its
+# siblings carried a virtual path straight to the host, where it names a
+# different file or none at all. ``shutil.copystat()`` reaches them through
+# ``_copyxattr()``, which CPython defines only when ``os.listxattr`` exists:
+# on macOS it degrades to a no-op ``pass``, so the entire escape was invisible
+# on a macOS dev machine and only surfaced on Linux CI, as ENOENT out of
+# ``copy2()`` and ``copytree()``.
+#
+# The shims answer the way a filesystem that genuinely holds no extended
+# attributes does:
+#
+# * ``listxattr()`` returns ``[]`` -- the file really has no extended
+#   attributes, so this is a true answer rather than a refusal, and it leaves
+#   ``_copyxattr()``'s copy loop with nothing to iterate;
+# * ``getxattr()`` raises ``ENODATA``, consistent with that empty listing:
+#   the attribute the caller named is not there;
+# * ``setxattr()`` and ``removexattr()`` raise ``ENOTSUP``. A write has to
+#   fail loudly -- returning success would tell the caller its attribute was
+#   stored when nothing can store it.
+#
+# Every errno here is one ``shutil._copyxattr()`` swallows: ENOTSUP, ENODATA
+# and EINVAL around the listing, plus EPERM and EACCES in the copy loop. That
+# tolerance is identical in CPython 3.10 through 3.14, so ``copystat()`` --
+# and with it ``copy2()`` and ``copytree()`` -- carries on.
+#
+# Unlike the other path shims these never consult the active filesystem and
+# never fall back to the host, not even for safe system paths: there is
+# nothing to ask a backend about, and any answer read off the host would
+# describe the wrong file. ``path`` is ignored entirely, which also means the
+# shims accept everything the real functions do -- str, bytes, PathLike, an
+# ``os.DirEntry`` (which is what ``copytree()`` hands ``copystat()``), an fd,
+# or ``None``.
+
+
+def _vfs_listxattr(path: Any = None, *, follow_symlinks: bool = True) -> list[str]:
+    """FileSystem-aware os.listxattr() replacement -- no attributes to list."""
+    if current_fs.get() is not None:
+        return []
+    return _originals["listxattr"](path, follow_symlinks=follow_symlinks)
+
+
+def _vfs_getxattr(path: Any, attribute: Any, *, follow_symlinks: bool = True) -> bytes:
+    """FileSystem-aware os.getxattr() replacement -- no such attribute."""
+    if current_fs.get() is not None:
+        raise OSError(
+            errno.ENODATA,
+            "extended attributes are not supported while a monkeyfs "
+            "filesystem is active",
+            str(path),
+        )
+    return _originals["getxattr"](path, attribute, follow_symlinks=follow_symlinks)
+
+
+def _vfs_setxattr(
+    path: Any,
+    attribute: Any,
+    value: Any,
+    flags: int = 0,
+    *,
+    follow_symlinks: bool = True,
+) -> None:
+    """FileSystem-aware os.setxattr() replacement -- refuses, never drops."""
+    if current_fs.get() is not None:
+        raise OSError(
+            errno.ENOTSUP,
+            "extended attributes are not supported while a monkeyfs "
+            "filesystem is active",
+            str(path),
+        )
+    return _originals["setxattr"](
+        path, attribute, value, flags, follow_symlinks=follow_symlinks
+    )
+
+
+def _vfs_removexattr(
+    path: Any, attribute: Any, *, follow_symlinks: bool = True
+) -> None:
+    """FileSystem-aware os.removexattr() replacement -- refuses, never drops."""
+    if current_fs.get() is not None:
+        raise OSError(
+            errno.ENOTSUP,
+            "extended attributes are not supported while a monkeyfs "
+            "filesystem is active",
+            str(path),
+        )
+    return _originals["removexattr"](path, attribute, follow_symlinks=follow_symlinks)
+
+
 def _vfs_truncate(path: str, length: int) -> None:
     """FileSystem-aware os.truncate() replacement."""
     fs = current_fs.get()
