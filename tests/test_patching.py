@@ -1008,6 +1008,51 @@ class TestShutilFlagDisabling:
         assert not fs.isfile("mydir/a.txt")
         assert not fs.isfile("mydir/b.txt")
 
+    def test_shutil_rmtree_removes_nested_directories(self):
+        """rmtree must recurse into subdirectories, not just flat ones.
+
+        ``patch()`` forces ``shutil._use_fd_functions = False`` so rmtree
+        takes the string-path ``_rmtree_unsafe`` route. That route calls
+        ``entry.is_junction()`` on every entry it decides is a directory
+        (CPython 3.12+), so a tree with any subdirectory in it reached a
+        method ``MockDirEntry`` did not define and raised ``AttributeError``.
+        A flat directory never exercises it.
+        """
+        import shutil
+
+        fs = VirtualFS({})
+        fs.write("/tree/top.txt", b"top")
+        fs.write("/tree/sub/mid.txt", b"mid")
+        fs.write("/tree/sub/deeper/leaf.txt", b"leaf")
+
+        with patch(fs):
+            shutil.rmtree("tree")
+
+        assert not fs.isfile("tree/top.txt")
+        assert not fs.isfile("tree/sub/mid.txt")
+        assert not fs.isfile("tree/sub/deeper/leaf.txt")
+        assert not fs.isdir("tree/sub/deeper")
+        assert not fs.isdir("tree/sub")
+        assert not fs.isdir("tree")
+
+    def test_mock_dir_entry_is_junction_is_false(self):
+        """A virtual filesystem has no junctions; entries must say so.
+
+        A junction is a Windows NTFS construct, not a symlink -- the real
+        ``os.DirEntry.is_junction()`` returns False on every non-Windows
+        platform and for anything that is not a junction.
+        """
+        import os
+
+        fs = VirtualFS({})
+        fs.write("/d/sub/f.txt", b"x")
+
+        with patch(fs):
+            entries = {e.name: e for e in os.scandir("/d")}
+
+        assert entries["sub"].is_dir()
+        assert entries["sub"].is_junction() is False
+
 
 class TestPatchReentrancy:
     """Overlapping patch() contexts must not restore process globals early.
