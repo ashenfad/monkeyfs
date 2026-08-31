@@ -162,6 +162,22 @@ class MockDirEntry:
     def is_symlink(self) -> bool:
         return False
 
+    def is_junction(self) -> bool:
+        """Always ``False`` -- a filesystem backend has no NTFS junctions.
+
+        Added in Python 3.12, where ``shutil._rmtree_unsafe`` calls it on
+        every entry it has decided is a directory. ``patch()`` deliberately
+        forces ``shutil._use_fd_functions = False`` to route ``rmtree``
+        through that string-path implementation, so this is on the path
+        monkeyfs steers callers onto. Defined unconditionally: nothing on
+        3.10/3.11 calls it, so version-gating would only add a branch.
+
+        A junction is a Windows NTFS construct, not a symlink -- the real
+        ``os.DirEntry.is_junction()`` returns ``False`` on every non-Windows
+        platform and for anything that is not a junction.
+        """
+        return False
+
     def stat(self, follow_symlinks: bool = True) -> os.stat_result:
         if self._stat is None:
             raise FileNotFoundError(f"No stat available for {self.name}")
