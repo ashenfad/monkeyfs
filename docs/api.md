@@ -195,7 +195,7 @@ current_fs.get()  # None (no patching active)
 | `builtins` / `io` | `open` |
 | `os` | `listdir`, `scandir`, `remove`, `unlink`, `mkdir`, `makedirs`, `rmdir`, `rename`, `replace`, `stat`, `lstat`, `getcwd`, `chdir`, `utime`, `getenv`, `access`, `readlink`, `symlink`, `link`, `chmod`, `lchmod`, `chflags`, `lchflags` (last three BSD/macOS), `chown`, `truncate`, `listxattr`, `getxattr`, `setxattr`, `removexattr` (Linux), `open`, `read`, `write`, `close`, `fstat`, `lseek` |
 | `os.path` | `exists`, `isfile`, `isdir`, `islink`, `lexists`, `samefile`, `realpath`, `abspath`, `getsize`, `expanduser`, `expandvars` |
-| `pathlib` | `Path.touch`, `Path._globber` (3.13+) |
+| `pathlib` | `Path.touch`, `_NormalAccessor` (3.10), `Path._globber` (3.13+) |
 | `glob` | `_StringGlobber` (3.13+) |
 | `fcntl` | `fcntl`, `flock`, `lockf` (no-op under VFS; Posix only) |
 | `shutil` | Optimization flags disabled while any `patch()` context is live, to force string-path code paths (reference counted across overlapping contexts) |

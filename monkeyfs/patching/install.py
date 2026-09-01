@@ -331,6 +331,13 @@ def _apply_patches() -> None:
             accessor.listdir = staticmethod(_vfs_listdir)
         if hasattr(accessor, "getcwd"):
             accessor.getcwd = staticmethod(_vfs_getcwd)
+        # _NormalAccessor.chmod is a reference to os.chmod captured when
+        # pathlib was imported, so patching the os module later does not
+        # reach it: on 3.10, Path.chmod() and Path.lchmod() went straight to
+        # the host filesystem from inside a patch() context. 3.11 removed the
+        # accessor and calls os.chmod directly, so this is 3.10 only.
+        if hasattr(accessor, "chmod"):
+            accessor.chmod = staticmethod(_vfs_chmod)
 
     # Patch pathlib.Path._globber (Python 3.13+)
     if hasattr(pathlib.Path, "_globber"):
