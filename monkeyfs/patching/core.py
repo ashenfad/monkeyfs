@@ -243,8 +243,31 @@ def _symlink_stat_result(fs: Any, path: str, target: os.stat_result) -> os.stat_
             target.st_atime,
             target.st_mtime,
             target.st_ctime,
-        )
+        ),
+        _stat_ns_fields(target.st_atime, target.st_mtime, target.st_ctime),
     )
+
+
+def _timestamp_ns(seconds: float) -> int:
+    """Nanoseconds for an ``st_*_ns`` field, from a seconds-since-epoch float."""
+    return round(seconds * 1_000_000_000)
+
+
+def _stat_ns_fields(atime: float, mtime: float, ctime: float) -> dict[str, int]:
+    """The ``st_atime_ns`` / ``st_mtime_ns`` / ``st_ctime_ns`` dict.
+
+    ``os.stat_result`` built from a bare 10-tuple answers ``None`` for all
+    three -- CPython does not derive them from the float seconds, it only
+    returns what the optional second argument supplied. That made
+    ``shutil.copystat()`` call ``os.utime(dst, ns=(None, None))``, so even a
+    ``utime`` shim that honored ``ns`` had nothing to honor. Supplying them
+    keeps the two views of the same timestamp consistent.
+    """
+    return {
+        "st_atime_ns": _timestamp_ns(atime),
+        "st_mtime_ns": _timestamp_ns(mtime),
+        "st_ctime_ns": _timestamp_ns(ctime),
+    }
 
 
 def _metadata_to_stat_result(meta: FileMetadata) -> os.stat_result:
@@ -261,5 +284,6 @@ def _metadata_to_stat_result(meta: FileMetadata) -> os.stat_result:
             meta.st_atime,
             meta.st_mtime,
             meta.st_ctime,
-        )
+        ),
+        _stat_ns_fields(meta.st_atime, meta.st_mtime, meta.st_ctime),
     )

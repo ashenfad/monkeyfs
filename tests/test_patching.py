@@ -1068,11 +1068,17 @@ class TestShutilFlagDisabling:
         root = tmp_path / "root"
         root.mkdir()
         (root / "src.txt").write_text("copy me")
+        # Age the source: without this, "now" and "the source's mtime" are the
+        # same value and a copy2() that preserved nothing would still pass.
+        os.utime(root / "src.txt", (1_600_000_000, 1_600_000_000))
 
         with patch(IsolatedFS(str(root))):
             shutil.copy2("/src.txt", "/dst.txt")
 
         assert (root / "dst.txt").read_text() == "copy me"
+        assert (root / "dst.txt").stat().st_mtime == pytest.approx(
+            1_600_000_000, abs=1e-3
+        ), "copy2() did not preserve the source's mtime"
 
     @pytest.mark.skipif(not hasattr(os, "chflags"), reason="chflags is BSD/macOS only")
     def test_chflags_reports_enotsup(self, tmp_path):
@@ -1566,3 +1572,236 @@ class TestFcntlPatching:
             # Should call real fcntl, not raise
             flags = fcntl.fcntl(fd, fcntl.F_GETFL)
             assert isinstance(flags, int)
+
+
+class TestUtimeArguments:
+    """``os.utime()`` is reached almost entirely through ``ns=``.
+
+    ``shutil.copystat()`` -- and with it ``copy2()`` and ``copytree()`` --
+    only ever calls ``os.utime(dst, ns=(...), follow_symlinks=...)``. The
+    shim accepted ``times`` and swallowed everything else, so the ``ns``
+    pair was discarded and the destination was stamped with *now*.
+    """
+
+    @staticmethod
+    def _isolated_root(tmp_path):
+        from monkeyfs import IsolatedFS
+
+        root = tmp_path / "root"
+        root.mkdir()
+        return root, IsolatedFS(str(root))
+
+    def test_utime_ns_sets_the_requested_time(self, tmp_path):
+        """``ns=`` was dropped entirely, leaving the file stamped with now."""
+        root, fs = self._isolated_root(tmp_path)
+        (root / "f.txt").write_text("x")
+        wanted = 1_600_000_000
+
+        with patch(fs):
+            os.utime("/f.txt", ns=(wanted * 10**9, wanted * 10**9))
+
+        assert (root / "f.txt").stat().st_mtime == pytest.approx(wanted, abs=1e-3)
+
+    def test_utime_ns_reaches_a_virtual_backend_too(self):
+        """The conversion happens at the patch boundary, not in one backend."""
+        vfs = VirtualFS({})
+        vfs.write("/f.txt", b"x")
+        wanted = 1_600_000_000
+
+        with patch(vfs):
+            os.utime("/f.txt", ns=(wanted * 10**9, wanted * 10**9))
+            observed = os.path.getmtime("/f.txt")
+
+        assert observed == pytest.approx(wanted, abs=1e-3)
+
+    def test_utime_times_still_works(self, tmp_path):
+        """The documented ``times=`` path is unchanged."""
+        root, fs = self._isolated_root(tmp_path)
+        (root / "f.txt").write_text("x")
+
+        with patch(fs):
+            os.utime("/f.txt", (1_600_000_000.0, 1_600_000_000.0))
+
+        assert (root / "f.txt").stat().st_mtime == pytest.approx(
+            1_600_000_000, abs=1e-3
+        )
+
+    def test_utime_rejects_times_and_ns_together(self, tmp_path):
+        """Real ``os.utime()`` raises ValueError; the shim accepted both."""
+        root, fs = self._isolated_root(tmp_path)
+        (root / "f.txt").write_text("x")
+
+        with patch(fs):
+            with pytest.raises(ValueError, match="either 'times' or 'ns'"):
+                os.utime("/f.txt", (1, 1), ns=(1, 1))
+            # Even an explicit ns=None counts as "specified", as it does in
+            # CPython's argument clinic.
+            with pytest.raises(ValueError, match="either 'times' or 'ns'"):
+                os.utime("/f.txt", (1, 1), ns=None)
+
+    def test_utime_rejects_a_malformed_ns(self, tmp_path):
+        """Matching the real TypeErrors, including for an explicit ns=None."""
+        root, fs = self._isolated_root(tmp_path)
+        (root / "f.txt").write_text("x")
+
+        with patch(fs):
+            with pytest.raises(TypeError, match="'ns' must be a tuple of two ints"):
+                os.utime("/f.txt", ns=None)
+            with pytest.raises(TypeError, match="'ns' must be a tuple of two ints"):
+                os.utime("/f.txt", ns=(1,))
+            with pytest.raises(TypeError, match="cannot be interpreted as an integer"):
+                os.utime("/f.txt", ns=(1.5, 2.5))
+
+    def test_utime_rejects_a_malformed_times(self, tmp_path):
+        root, fs = self._isolated_root(tmp_path)
+        (root / "f.txt").write_text("x")
+
+        with patch(fs):
+            with pytest.raises(TypeError, match="'times' must be either a tuple"):
+                os.utime("/f.txt", (1,))
+
+
+class TestUtimeFollowSymlinks:
+    """``follow_symlinks=False`` means "the link, not its target"."""
+
+    @staticmethod
+    def _sandbox(tmp_path):
+        from monkeyfs import IsolatedFS
+
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "target.txt").write_text("target")
+        os.utime(root / "target.txt", (1_600_000_000, 1_600_000_000))
+        os.symlink("target.txt", root / "link")
+        return root, IsolatedFS(str(root))
+
+    def test_utime_on_a_link_refuses_instead_of_retargeting(self, tmp_path):
+        """Dropping the flag stamped the *target*, which is what it forbids.
+
+        No backend exposes an ``lutime()``, so the link's own timestamps are
+        unreachable. ENOTSUP is the same answer ``_reject_dir_fd()`` gives for
+        the same reason.
+        """
+        root, fs = self._sandbox(tmp_path)
+        before = (root / "target.txt").stat().st_mtime
+
+        refused = None
+        with patch(fs):
+            try:
+                os.utime("/link", (1, 1), follow_symlinks=False)
+            except OSError as exc:
+                refused = exc
+
+        # The damage first: silently dropping the flag stamps the target.
+        assert (root / "target.txt").stat().st_mtime == before, (
+            "utime(follow_symlinks=False) modified the link's target"
+        )
+        assert refused is not None, (
+            "utime(follow_symlinks=False) on a link should refuse, not no-op"
+        )
+        assert refused.errno == errno.ENOTSUP
+
+    def test_utime_on_a_link_follows_by_default(self, tmp_path):
+        """The default is unchanged: it stamps the target."""
+        root, fs = self._sandbox(tmp_path)
+
+        with patch(fs):
+            os.utime("/link", (1_700_000_000, 1_700_000_000))
+
+        assert (root / "target.txt").stat().st_mtime == pytest.approx(
+            1_700_000_000, abs=1e-3
+        )
+
+    def test_follow_symlinks_false_on_a_plain_file_is_allowed(self, tmp_path):
+        """Refuse only where it would matter -- a non-link has no target."""
+        root, fs = self._sandbox(tmp_path)
+
+        with patch(fs):
+            os.utime(
+                "/target.txt", (1_700_000_000, 1_700_000_000), follow_symlinks=False
+            )
+
+        assert (root / "target.txt").stat().st_mtime == pytest.approx(
+            1_700_000_000, abs=1e-3
+        )
+
+    def test_copystat_never_reaches_utime_with_follow_symlinks_false(self, tmp_path):
+        """The shim is deliberately absent from ``os.supports_follow_symlinks``.
+
+        ``copystat()`` membership-tests the function object it finds in ``os``
+        and substitutes a no-op when it is missing, so ``copytree(symlinks=True)``
+        does not trip the refusal above.
+        """
+        import shutil
+
+        root, fs = self._sandbox(tmp_path)
+        os.symlink("target.txt", root / "link2")
+        before = (root / "target.txt").stat().st_mtime
+
+        with patch(fs):
+            assert os.utime not in os.supports_follow_symlinks
+            shutil.copystat("/link", "/link2", follow_symlinks=False)
+
+        assert (root / "target.txt").stat().st_mtime == before
+
+
+class TestCopyTimestampPreservation:
+    """``copy2()``/``copytree()`` exist to preserve metadata; assert it."""
+
+    def test_stat_reports_nanosecond_timestamps(self, tmp_path):
+        """``copystat()`` reads ``st_*_ns`` and passes it straight to ``utime()``.
+
+        ``os.stat_result`` built from a bare 10-tuple answers ``None`` for all
+        three ``_ns`` fields, so the shim was handing ``copystat()`` a source
+        timestamp of ``None`` -- honoring ``ns=`` in ``os.utime()`` alone would
+        still have preserved nothing.
+        """
+        from monkeyfs import IsolatedFS
+
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "f.txt").write_text("x")
+        os.utime(root / "f.txt", (1_600_000_000, 1_600_000_000))
+
+        with patch(IsolatedFS(str(root))):
+            st = os.stat("/f.txt")
+
+        assert st.st_mtime_ns == pytest.approx(1_600_000_000 * 10**9, abs=1_000_000)
+        assert st.st_atime_ns is not None
+        assert st.st_ctime_ns is not None
+
+    def test_copy2_preserves_mtime(self, tmp_path):
+        import shutil
+
+        from monkeyfs import IsolatedFS
+
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "src.txt").write_text("copy me")
+        old = 1_600_000_000
+        os.utime(root / "src.txt", (old, old))
+
+        with patch(IsolatedFS(str(root))):
+            shutil.copy2("/src.txt", "/dst.txt")
+
+        assert (root / "dst.txt").stat().st_mtime == pytest.approx(
+            (root / "src.txt").stat().st_mtime, abs=1e-3
+        ), "copy2() stamped the destination with now instead of the source's mtime"
+
+    def test_copytree_preserves_mtime(self, tmp_path):
+        import shutil
+
+        from monkeyfs import IsolatedFS
+
+        root = tmp_path / "root"
+        (root / "tree").mkdir(parents=True)
+        (root / "tree" / "f.txt").write_text("copy me")
+        old = 1_600_000_000
+        os.utime(root / "tree" / "f.txt", (old, old))
+
+        with patch(IsolatedFS(str(root))):
+            shutil.copytree("/tree", "/copy")
+
+        assert (root / "copy" / "f.txt").stat().st_mtime == pytest.approx(
+            old, abs=1e-3
+        ), "copytree() stamped the copy with now instead of the source's mtime"

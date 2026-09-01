@@ -184,9 +184,12 @@ def _apply_patches() -> None:
     # replaced os.stat has to be in the set, or copystat substitutes a no-op
     # that returns None and then dies on `st.st_mode`. That is reachable from
     # shutil.copytree(symlinks=True), which lands there for every link it
-    # recreates. Only stat() is registered: the os.utime() and os.chmod() shims
-    # still drop follow_symlinks, and degrading those to a no-op is safer than
-    # having copystat retarget them at the link's target.
+    # recreates. Only stat() is registered, and deliberately so: the os.chmod()
+    # shim still drops follow_symlinks, and the os.utime() shim refuses it on a
+    # link (no backend has an lutime()). Leaving both out of the set is what
+    # makes copystat substitute a no-op instead of retargeting them at the
+    # link's target -- or, for utime, tripping that refusal on every link
+    # copytree(symlinks=True) recreates.
     if hasattr(os, "supports_follow_symlinks"):
         try:
             os.supports_follow_symlinks.add(_vfs_stat)  # type: ignore[attr-defined]
