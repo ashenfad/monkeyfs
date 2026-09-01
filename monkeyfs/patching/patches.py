@@ -630,10 +630,41 @@ def _vfs_expandvars(path: str | os.PathLike[Any]) -> str:
     return _originals["expandvars"](path)
 
 
-# Sentinel for os.utime's ``ns``: it has no default in the real signature, so
-# an explicit ``ns=None`` is an error rather than "not supplied", and only a
-# sentinel can tell the two apart.
-_NS_UNSET: Any = object()
+# Default for every optional keyword the shims accept but do not themselves
+# need a value for. It marks "the caller did not supply this", which is not the
+# same fact as any concrete value: os.utime's ``ns`` has no default at all in
+# the real signature, so an explicit ``ns=None`` is an error rather than an
+# absence, and only a sentinel can tell the two apart.
+#
+# The rest of the surface takes the same treatment for a different reason. A
+# shim that declared ``follow_symlinks: bool = True`` and forwarded it
+# unconditionally rewrote a bare ``os.chmod(p, mode)`` into ``os.chmod(p, mode,
+# follow_symlinks=True)`` on its way to the real function, turning "omitted"
+# into "explicitly requested". With no filesystem active a shim is supposed to
+# be inert -- indistinguishable from the function it replaced -- and inventing
+# an argument the caller never wrote is not inert, whatever the value happens
+# to be.
+_UNSET: Any = object()
+
+
+def _supplied(**maybe: Any) -> dict[str, Any]:
+    """Reduce keyword arguments to the ones the caller actually passed.
+
+    Used to build the ``**`` of a call into ``_originals``: anything still
+    holding ``_UNSET`` is dropped rather than forwarded with a value this
+    module chose.
+    """
+    return {name: value for name, value in maybe.items() if value is not _UNSET}
+
+
+def _asked_not_to_follow(follow_symlinks: Any) -> bool:
+    """Did the caller explicitly pass a false ``follow_symlinks``?
+
+    ``_UNSET`` is an absence, and the absence means the real default, which is
+    to follow -- so it is not an answer of ``False`` and must not be read as
+    one.
+    """
+    return follow_symlinks is not _UNSET and not follow_symlinks
 
 
 def _utime_times_from_ns(ns: tuple[int, int]) -> tuple[float, float]:
@@ -669,7 +700,7 @@ def _utime_resolve_times(
     supplying both is a ``ValueError`` even when ``ns`` is ``None``, and a
     malformed ``ns`` or ``times`` is a ``TypeError``.
     """
-    if ns is not _NS_UNSET:
+    if ns is not _UNSET:
         if times is not None:
             raise ValueError(
                 "utime: you may specify either 'times' or 'ns' but not both"
@@ -687,8 +718,8 @@ def _vfs_utime(
     path: str | bytes | os.PathLike[Any],
     times: tuple[int, int] | tuple[float, float] | None = None,
     *,
-    ns: Any = _NS_UNSET,
-    follow_symlinks: bool = True,
+    ns: Any = _UNSET,
+    follow_symlinks: Any = _UNSET,
     **kwargs: Any,
 ) -> None:
     """FileSystem-aware os.utime() replacement.
@@ -709,17 +740,15 @@ def _vfs_utime(
     """
     fs = current_fs.get()
     if fs is None:
-        if ns is not _NS_UNSET:
-            kwargs["ns"] = ns
         return _originals["utime"](
-            path, times, follow_symlinks=follow_symlinks, **kwargs
+            path, times, **kwargs, **_supplied(ns=ns, follow_symlinks=follow_symlinks)
         )
 
     _reject_dir_fd("utime", **kwargs)
     resolved = _utime_resolve_times(times, ns)
     path_str = str(path)
 
-    if not follow_symlinks and _fs_islink(fs, path_str):
+    if _asked_not_to_follow(follow_symlinks) and _fs_islink(fs, path_str):
         raise OSError(
             errno.ENOTSUP,
             "follow_symlinks=False is not supported by os.utime() on a "
@@ -730,10 +759,11 @@ def _vfs_utime(
     if fs.exists(path_str):
         return _require(fs, "utime")(path_str, resolved)
     if _is_safe_system_path(path_str):
-        if ns is not _NS_UNSET:
-            kwargs["ns"] = ns
         return _originals["utime"](
-            path_str, times, follow_symlinks=follow_symlinks, **kwargs
+            path_str,
+            times,
+            **kwargs,
+            **_supplied(ns=ns, follow_symlinks=follow_symlinks),
         )
     raise FileNotFoundError(
         errno.ENOENT, f"No such file or directory: '{path_str}'", path_str
@@ -799,7 +829,7 @@ def _vfs_link(src: str, dst: str, **kwargs: Any) -> None:
 
 
 def _vfs_chmod(
-    path: Any, mode: int, *, follow_symlinks: bool = True, **kwargs: Any
+    path: Any, mode: int, *, follow_symlinks: Any = _UNSET, **kwargs: Any
 ) -> None:
     """FileSystem-aware os.chmod() replacement.
 
@@ -820,13 +850,13 @@ def _vfs_chmod(
     fs = current_fs.get()
     if fs is None:
         return _originals["chmod"](
-            path, mode, follow_symlinks=follow_symlinks, **kwargs
+            path, mode, **kwargs, **_supplied(follow_symlinks=follow_symlinks)
         )
 
     _reject_dir_fd("chmod", **kwargs)
     path_str = str(path)
 
-    if not follow_symlinks and _fs_islink(fs, path_str):
+    if _asked_not_to_follow(follow_symlinks) and _fs_islink(fs, path_str):
         raise OSError(
             errno.ENOTSUP,
             "follow_symlinks=False is not supported by os.chmod() on a "
@@ -957,14 +987,14 @@ def _vfs_lchflags(path: Any, flags: int, **kwargs: Any) -> None:
 # or ``None``.
 
 
-def _vfs_listxattr(path: Any = None, *, follow_symlinks: bool = True) -> list[str]:
+def _vfs_listxattr(path: Any = None, *, follow_symlinks: Any = _UNSET) -> list[str]:
     """FileSystem-aware os.listxattr() replacement -- no attributes to list."""
     if current_fs.get() is not None:
         return []
-    return _originals["listxattr"](path, follow_symlinks=follow_symlinks)
+    return _originals["listxattr"](path, **_supplied(follow_symlinks=follow_symlinks))
 
 
-def _vfs_getxattr(path: Any, attribute: Any, *, follow_symlinks: bool = True) -> bytes:
+def _vfs_getxattr(path: Any, attribute: Any, *, follow_symlinks: Any = _UNSET) -> bytes:
     """FileSystem-aware os.getxattr() replacement -- no such attribute."""
     if current_fs.get() is not None:
         raise OSError(
@@ -973,7 +1003,9 @@ def _vfs_getxattr(path: Any, attribute: Any, *, follow_symlinks: bool = True) ->
             "filesystem is active",
             str(path),
         )
-    return _originals["getxattr"](path, attribute, follow_symlinks=follow_symlinks)
+    return _originals["getxattr"](
+        path, attribute, **_supplied(follow_symlinks=follow_symlinks)
+    )
 
 
 def _vfs_setxattr(
@@ -982,7 +1014,7 @@ def _vfs_setxattr(
     value: Any,
     flags: int = 0,
     *,
-    follow_symlinks: bool = True,
+    follow_symlinks: Any = _UNSET,
 ) -> None:
     """FileSystem-aware os.setxattr() replacement -- refuses, never drops."""
     if current_fs.get() is not None:
@@ -993,12 +1025,12 @@ def _vfs_setxattr(
             str(path),
         )
     return _originals["setxattr"](
-        path, attribute, value, flags, follow_symlinks=follow_symlinks
+        path, attribute, value, flags, **_supplied(follow_symlinks=follow_symlinks)
     )
 
 
 def _vfs_removexattr(
-    path: Any, attribute: Any, *, follow_symlinks: bool = True
+    path: Any, attribute: Any, *, follow_symlinks: Any = _UNSET
 ) -> None:
     """FileSystem-aware os.removexattr() replacement -- refuses, never drops."""
     if current_fs.get() is not None:
@@ -1008,7 +1040,9 @@ def _vfs_removexattr(
             "filesystem is active",
             str(path),
         )
-    return _originals["removexattr"](path, attribute, follow_symlinks=follow_symlinks)
+    return _originals["removexattr"](
+        path, attribute, **_supplied(follow_symlinks=follow_symlinks)
+    )
 
 
 def _vfs_truncate(path: str, length: int) -> None:
