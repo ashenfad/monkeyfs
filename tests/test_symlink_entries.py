@@ -279,9 +279,13 @@ class TestCopytreeAndWalk:
     def test_copytree_symlinks_true_recreates_the_link(self, tmp_path):
         """With ``symlinks=True`` the copy gets a link, not a duplicated tree."""
         root = _sandbox(tmp_path)
+        os.utime(root / "tree" / "own.txt", (1_600_000_000, 1_600_000_000))
         with patch(IsolatedFS(str(root))):
             shutil.copytree("/tree", "/copy", symlinks=True)
 
+        assert (root / "copy" / "own.txt").stat().st_mtime == pytest.approx(
+            1_600_000_000, abs=1e-3
+        ), "copytree() did not preserve the source's mtime"
         assert (root / "copy" / "inward").is_symlink(), (
             "the symlink was copied through instead of recreated"
         )
@@ -297,9 +301,13 @@ class TestCopytreeAndWalk:
     def test_copytree_symlinks_false_copies_through_the_link(self, tmp_path):
         """The default still resolves links, which is what ``symlinks=False`` means."""
         root = _sandbox(tmp_path)
+        os.utime(root / "tree" / "own.txt", (1_600_000_000, 1_600_000_000))
         with patch(IsolatedFS(str(root))):
             shutil.copytree("/tree", "/copy")
 
+        assert (root / "copy" / "own.txt").stat().st_mtime == pytest.approx(
+            1_600_000_000, abs=1e-3
+        ), "copytree() did not preserve the source's mtime"
         assert not (root / "copy" / "inward").is_symlink()
         assert (root / "copy" / "inward" / "keep.txt").read_text() == "keep"
         assert (root / "copy" / "tofile").read_text() == "target"

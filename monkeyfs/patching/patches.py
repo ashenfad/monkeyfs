@@ -2,6 +2,7 @@
 
 import builtins
 import errno
+import operator
 import os
 import re
 from pathlib import Path
@@ -629,25 +630,114 @@ def _vfs_expandvars(path: str | os.PathLike[Any]) -> str:
     return _originals["expandvars"](path)
 
 
+# Sentinel for os.utime's ``ns``: it has no default in the real signature, so
+# an explicit ``ns=None`` is an error rather than "not supplied", and only a
+# sentinel can tell the two apart.
+_NS_UNSET: Any = object()
+
+
+def _utime_times_from_ns(ns: tuple[int, int]) -> tuple[float, float]:
+    """Convert an ``os.utime(ns=...)`` pair into the ``times=`` pair backends take.
+
+    ``utime(path, times)`` is the documented signature of the optional backend
+    method, and ``ns=`` is how almost everything actually reaches
+    ``os.utime()``: ``shutil.copystat()`` -- and through it ``copy2()`` and
+    ``copytree()`` -- calls ``os.utime(dst, ns=(...))`` and never passes
+    ``times`` at all. Extending the protocol to carry ``ns`` would therefore
+    break every backend written to the documented interface at the single most
+    common call site, so the conversion happens here, at the patch boundary,
+    and backends keep the signature they have.
+
+    The cost is sub-microsecond fidelity: a seconds-since-epoch float near 2026
+    resolves to roughly 240ns, so a nanosecond-exact round trip is not
+    preserved. No backend could hold one regardless -- ``VirtualFS`` stores an
+    ISO-8601 string, which stops at microseconds, and ``IsolatedFS`` hands
+    ``times`` to the host ``os.utime()``, which takes floats.
+
+    ``operator.index()`` is what makes a float element raise the same
+    ``TypeError`` the real ``os.utime()`` raises for it.
+    """
+    return (operator.index(ns[0]) / 1e9, operator.index(ns[1]) / 1e9)
+
+
+def _utime_resolve_times(
+    times: tuple[int, int] | tuple[float, float] | None, ns: Any
+) -> tuple[float, float] | tuple[int, int] | None:
+    """Validate ``times``/``ns`` as ``os.utime()`` does, and reduce to ``times``.
+
+    The messages and the order of the checks match CPython's argument clinic:
+    supplying both is a ``ValueError`` even when ``ns`` is ``None``, and a
+    malformed ``ns`` or ``times`` is a ``TypeError``.
+    """
+    if ns is not _NS_UNSET:
+        if times is not None:
+            raise ValueError(
+                "utime: you may specify either 'times' or 'ns' but not both"
+            )
+        if not isinstance(ns, tuple) or len(ns) != 2:
+            raise TypeError("utime: 'ns' must be a tuple of two ints")
+        return _utime_times_from_ns(ns)
+
+    if times is not None and (not isinstance(times, tuple) or len(times) != 2):
+        raise TypeError("utime: 'times' must be either a tuple of two ints or None")
+    return times
+
+
 def _vfs_utime(
     path: str | bytes | os.PathLike[Any],
     times: tuple[int, int] | tuple[float, float] | None = None,
+    *,
+    ns: Any = _NS_UNSET,
+    follow_symlinks: bool = True,
     **kwargs: Any,
 ) -> None:
-    """FileSystem-aware os.utime() replacement."""
+    """FileSystem-aware os.utime() replacement.
+
+    ``ns=`` is named explicitly and converted to ``times``; swallowing it in
+    ``**kwargs`` meant ``shutil.copystat()`` -- which passes nothing else --
+    silently stamped every ``copy2()`` destination with the current time.
+
+    ``follow_symlinks=False`` is refused on a symlink rather than dropped, for
+    the reason spelled out in ``_reject_dir_fd()``: no backend exposes an
+    ``lutime()``, so the link's own timestamps cannot be set, and quietly
+    following the link writes to the target -- exactly the file the flag exists
+    to protect. The refusal is narrow: it fires only when the flag is ``False``
+    *and* the path is a link, so ordinary calls are untouched. Nothing in
+    ``shutil`` reaches it, because ``_vfs_utime`` is deliberately absent from
+    ``os.supports_follow_symlinks`` and ``copystat()`` substitutes a no-op for
+    anything missing from that set.
+    """
     fs = current_fs.get()
-    if fs is not None:
-        _reject_dir_fd("utime", **kwargs)
-        path_str = str(path)
-        if fs.exists(path_str):
-            return _require(fs, "utime")(path_str, times)
-        if _is_safe_system_path(path_str):
-            return _originals["utime"](path_str, times, **kwargs)
-        raise FileNotFoundError(
-            errno.ENOENT, f"No such file or directory: '{path_str}'", path_str
+    if fs is None:
+        if ns is not _NS_UNSET:
+            kwargs["ns"] = ns
+        return _originals["utime"](
+            path, times, follow_symlinks=follow_symlinks, **kwargs
         )
 
-    return _originals["utime"](path, times, **kwargs)
+    _reject_dir_fd("utime", **kwargs)
+    resolved = _utime_resolve_times(times, ns)
+    path_str = str(path)
+
+    if not follow_symlinks and _fs_islink(fs, path_str):
+        raise OSError(
+            errno.ENOTSUP,
+            "follow_symlinks=False is not supported by os.utime() on a "
+            "symbolic link while a monkeyfs filesystem is active",
+            path_str,
+        )
+
+    if fs.exists(path_str):
+        return _require(fs, "utime")(path_str, resolved)
+    if _is_safe_system_path(path_str):
+        if ns is not _NS_UNSET:
+            kwargs["ns"] = ns
+        return _originals["utime"](
+            path_str, times, follow_symlinks=follow_symlinks, **kwargs
+        )
+    raise FileNotFoundError(
+        errno.ENOENT, f"No such file or directory: '{path_str}'", path_str
+    )
 
 
 def _vfs_replace(src: str, dst: str, **kwargs: Any) -> None:
