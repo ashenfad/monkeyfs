@@ -34,6 +34,8 @@ from .patches import (
     _vfs_isdir,
     _vfs_isfile,
     _vfs_islink,
+    _vfs_lchflags,
+    _vfs_lchmod,
     _vfs_lexists,
     _vfs_link,
     _vfs_listdir,
@@ -185,11 +187,10 @@ def _apply_patches() -> None:
     # that returns None and then dies on `st.st_mode`. That is reachable from
     # shutil.copytree(symlinks=True), which lands there for every link it
     # recreates. Only stat() is registered, and deliberately so: the os.chmod()
-    # shim still drops follow_symlinks, and the os.utime() shim refuses it on a
-    # link (no backend has an lutime()). Leaving both out of the set is what
-    # makes copystat substitute a no-op instead of retargeting them at the
-    # link's target -- or, for utime, tripping that refusal on every link
-    # copytree(symlinks=True) recreates.
+    # and os.utime() shims both refuse follow_symlinks=False on a link, since
+    # no backend exposes an lchmod() or an lutime(). Leaving them out of the
+    # set is what makes copystat substitute a no-op instead of tripping those
+    # refusals on every link copytree(symlinks=True) recreates.
     if hasattr(os, "supports_follow_symlinks"):
         try:
             os.supports_follow_symlinks.add(_vfs_stat)  # type: ignore[attr-defined]
@@ -206,8 +207,16 @@ def _apply_patches() -> None:
     if hasattr(os, "link"):
         os.link = _vfs_link  # type: ignore[assignment]
     os.chmod = _vfs_chmod  # type: ignore[assignment]
+    # os.lchmod() and os.lchflags() are BSD/macOS only, so an unpatched one is
+    # invisible on Linux -- and both took a virtual path straight to the host
+    # while a filesystem was active. os.lchmod is what shutil.copymode()
+    # reaches for when it is asked to copy a mode between two symlinks.
+    if hasattr(os, "lchmod"):
+        os.lchmod = _vfs_lchmod  # type: ignore[assignment]
     if hasattr(os, "chflags"):
         os.chflags = _vfs_chflags  # type: ignore[assignment]
+    if hasattr(os, "lchflags"):
+        os.lchflags = _vfs_lchflags  # type: ignore[assignment]
     # Extended attributes are Linux-only, so an unpatched os.listxattr() is
     # invisible on macOS -- and shutil.copystat() calls it on every copy2()
     # and copytree() there.
@@ -280,7 +289,9 @@ def _apply_patches() -> None:
     _vfs_symlink.__name__ = "symlink"
     _vfs_link.__name__ = "link"
     _vfs_chmod.__name__ = "chmod"
+    _vfs_lchmod.__name__ = "lchmod"
     _vfs_chflags.__name__ = "chflags"
+    _vfs_lchflags.__name__ = "lchflags"
     _vfs_listxattr.__name__ = "listxattr"
     _vfs_getxattr.__name__ = "getxattr"
     _vfs_setxattr.__name__ = "setxattr"

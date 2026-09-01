@@ -1805,3 +1805,321 @@ class TestCopyTimestampPreservation:
         assert (root / "copy" / "f.txt").stat().st_mtime == pytest.approx(
             old, abs=1e-3
         ), "copytree() stamped the copy with now instead of the source's mtime"
+
+
+class TestChmodFollowSymlinks:
+    """``os.chmod(follow_symlinks=False)`` means "the link, not its target"."""
+
+    @staticmethod
+    def _sandbox(tmp_path):
+        from monkeyfs import IsolatedFS
+
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "target.txt").write_text("target")
+        (root / "target.txt").chmod(0o644)
+        os.symlink("target.txt", root / "link")
+        return root, IsolatedFS(str(root))
+
+    def test_chmod_on_a_link_refuses_instead_of_retargeting(self, tmp_path):
+        """The same defect ``os.utime()`` had: the flag was dropped in kwargs.
+
+        ``IsolatedFS.chmod()`` resolves the final component, so
+        ``os.chmod("/link", mode, follow_symlinks=False)`` -- which means "the
+        link, not what it points at" -- rewrote the *target's* permission bits.
+        No backend exposes an ``lchmod()``, so ENOTSUP is the answer, exactly
+        as for ``os.utime()`` and ``dir_fd``.
+        """
+        import stat as stat_mod
+
+        root, fs = self._sandbox(tmp_path)
+
+        refused = None
+        with patch(fs):
+            try:
+                os.chmod("/link", 0o600, follow_symlinks=False)
+            except OSError as exc:
+                refused = exc
+
+        # The damage first: dropping the flag chmods the target.
+        assert stat_mod.S_IMODE((root / "target.txt").lstat().st_mode) == 0o644, (
+            "chmod(follow_symlinks=False) changed the link's target"
+        )
+        assert refused is not None, (
+            "chmod(follow_symlinks=False) on a link should refuse, not no-op"
+        )
+        assert refused.errno == errno.ENOTSUP
+
+    def test_path_lchmod_refuses_on_a_link(self, tmp_path):
+        """``Path.lchmod()`` is the cross-platform way into the same hole.
+
+        ``pathlib.Path.lchmod(mode)`` is defined as
+        ``self.chmod(mode, follow_symlinks=False)`` -- it never touches
+        ``os.lchmod`` -- so this route reached the target's mode on Linux too,
+        where ``os.lchmod`` does not even exist.
+        """
+        import stat as stat_mod
+        from pathlib import Path
+
+        root, fs = self._sandbox(tmp_path)
+
+        refused = None
+        with patch(fs):
+            try:
+                Path("/link").lchmod(0o600)
+            except OSError as exc:
+                refused = exc
+
+        assert stat_mod.S_IMODE((root / "target.txt").lstat().st_mode) == 0o644, (
+            "Path.lchmod() changed the link's target"
+        )
+        assert refused is not None and refused.errno == errno.ENOTSUP
+
+    def test_chmod_on_a_link_follows_by_default(self, tmp_path):
+        """The default is unchanged: it chmods the target."""
+        import stat as stat_mod
+
+        root, fs = self._sandbox(tmp_path)
+
+        with patch(fs):
+            os.chmod("/link", 0o600)
+
+        assert stat_mod.S_IMODE((root / "target.txt").lstat().st_mode) == 0o600
+
+    def test_follow_symlinks_false_on_a_plain_file_is_allowed(self, tmp_path):
+        """Refuse only where it would matter -- a non-link has no target."""
+        import stat as stat_mod
+
+        root, fs = self._sandbox(tmp_path)
+
+        with patch(fs):
+            os.chmod("/target.txt", 0o600, follow_symlinks=False)
+
+        assert stat_mod.S_IMODE((root / "target.txt").lstat().st_mode) == 0o600
+
+    def test_copystat_never_reaches_chmod_with_follow_symlinks_false(self, tmp_path):
+        """The shim stays out of ``os.supports_follow_symlinks`` for this reason.
+
+        ``copystat()`` substitutes a no-op for anything missing from that set,
+        so ``copytree(symlinks=True)`` does not trip the refusal above.
+        """
+        import shutil
+        import stat as stat_mod
+
+        root, fs = self._sandbox(tmp_path)
+        os.symlink("target.txt", root / "link2")
+
+        with patch(fs):
+            assert os.chmod not in os.supports_follow_symlinks
+            shutil.copystat("/link", "/link2", follow_symlinks=False)
+
+        assert stat_mod.S_IMODE((root / "target.txt").lstat().st_mode) == 0o644
+
+
+class TestBsdLinkShims:
+    """``os.lchmod()`` and ``os.lchflags()`` exist on BSD/macOS only.
+
+    Neither was patched, and until the CI matrix grew a macOS job no run
+    anywhere could execute a test for them: on Linux the attributes do not
+    exist, so a virtual path reaching the host went unnoticed on the only
+    platform that was ever tested.
+    """
+
+    @staticmethod
+    def _sandbox(tmp_path):
+        from monkeyfs import IsolatedFS
+
+        outside = tmp_path / "outside.txt"
+        outside.write_text("a real file, outside the sandbox")
+        outside.chmod(0o644)
+
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "target.txt").write_text("target")
+        (root / "target.txt").chmod(0o644)
+        os.symlink("target.txt", root / "link")
+        return outside, root, IsolatedFS(str(root))
+
+    @pytest.mark.skipif(not hasattr(os, "lchmod"), reason="lchmod is BSD/macOS only")
+    def test_lchmod_does_not_reach_the_host(self, tmp_path):
+        """Unpatched, ``os.lchmod()`` chmod'ed a real file from inside a sandbox."""
+        import stat as stat_mod
+
+        outside, _root, fs = self._sandbox(tmp_path)
+
+        refused = None
+        with patch(fs):
+            try:
+                os.lchmod(str(outside), 0o600)
+            except OSError as exc:
+                refused = exc
+
+        # The escape first: this is a file outside the sandbox entirely.
+        assert stat_mod.S_IMODE(outside.lstat().st_mode) == 0o644, (
+            "os.lchmod() reached the host filesystem and changed the mode of a "
+            "real file outside the sandbox"
+        )
+        assert refused is not None, "os.lchmod() under patch() must not succeed"
+        # It is answered from inside the sandbox, where an absolute host path
+        # names nothing -- the same answer os.chmod() already gave for it.
+        assert refused.errno == errno.ENOENT
+
+    @pytest.mark.skipif(not hasattr(os, "lchmod"), reason="lchmod is BSD/macOS only")
+    def test_lchmod_on_a_link_refuses_rather_than_retargeting(self, tmp_path):
+        """A sandbox-internal link is the other half: never chmod the target.
+
+        ``os.lchmod(path, mode)`` is ``os.chmod(path, mode,
+        follow_symlinks=False)``, so it lands on the same refusal.
+        """
+        import stat as stat_mod
+
+        _outside, root, fs = self._sandbox(tmp_path)
+
+        with patch(fs):
+            with pytest.raises(OSError) as exc:
+                os.lchmod("/link", 0o600)
+
+        assert exc.value.errno == errno.ENOTSUP
+        assert stat_mod.S_IMODE((root / "target.txt").lstat().st_mode) == 0o644, (
+            "os.lchmod() on a link changed the link's target"
+        )
+
+    @pytest.mark.skipif(not hasattr(os, "lchmod"), reason="lchmod is BSD/macOS only")
+    def test_lchmod_on_a_plain_file_still_chmods_it(self, tmp_path):
+        """The refusal is narrow: a non-link has no target to protect."""
+        import stat as stat_mod
+
+        _outside, root, fs = self._sandbox(tmp_path)
+
+        with patch(fs):
+            os.lchmod("/target.txt", 0o600)
+
+        assert stat_mod.S_IMODE((root / "target.txt").lstat().st_mode) == 0o600
+
+    @pytest.mark.skipif(not hasattr(os, "lchmod"), reason="lchmod is BSD/macOS only")
+    def test_shutil_copymode_between_two_links_never_reaches_the_host(self, tmp_path):
+        """``copymode()`` is the one stdlib route to ``os.lchmod()``.
+
+        With ``follow_symlinks=False`` and both paths symlinks, CPython 3.10
+        through 3.14 all call ``os.lchmod(dst, mode)`` with no exception
+        handling of any kind -- so whatever it does propagates straight out of
+        ``shutil.copy(src, dst, follow_symlinks=False)``. Unpatched, that call
+        carried the virtual path ``/link2`` to the host.
+        """
+        import shutil
+        import stat as stat_mod
+
+        _outside, root, fs = self._sandbox(tmp_path)
+        (root / "other.txt").write_text("other")
+        (root / "other.txt").chmod(0o600)
+        os.symlink("other.txt", root / "link2")
+
+        with patch(fs):
+            with pytest.raises(OSError) as exc:
+                shutil.copymode("/link", "/link2", follow_symlinks=False)
+
+        assert exc.value.errno == errno.ENOTSUP
+        # Neither link's target may have been touched.
+        assert stat_mod.S_IMODE((root / "target.txt").lstat().st_mode) == 0o644
+        assert stat_mod.S_IMODE((root / "other.txt").lstat().st_mode) == 0o600
+
+    @pytest.mark.skipif(
+        not hasattr(os, "lchflags"), reason="lchflags is BSD/macOS only"
+    )
+    def test_lchflags_does_not_reach_the_host(self, tmp_path):
+        """Same escape as ``os.chflags()``, on the link-only sibling.
+
+        BSD file flags are not part of the ``FileSystem`` protocol and no
+        backend carries them, so there is nothing to set -- and unpatched,
+        ``os.lchflags()`` set them on a real file instead.
+        """
+        import stat as stat_mod
+
+        outside, _root, fs = self._sandbox(tmp_path)
+        assert outside.lstat().st_flags == 0
+
+        refused = None
+        with patch(fs):
+            try:
+                os.lchflags(str(outside), stat_mod.UF_NODUMP)
+            except OSError as exc:
+                refused = exc
+
+        assert outside.lstat().st_flags == 0, (
+            "os.lchflags() reached the host filesystem and set flags on a real "
+            "file outside the sandbox"
+        )
+        assert refused is not None, "os.lchflags() under patch() must not succeed"
+        assert refused.errno == errno.ENOTSUP
+
+    def test_link_shims_are_installed_and_dispatch_on_the_filesystem(
+        self, tmp_path, monkeypatch
+    ):
+        """The wiring check that has to run on every platform, BSD or not.
+
+        ``os.lchmod`` and ``os.lchflags`` exist only on BSD/macOS, so a
+        skipif'd test leaves a Linux contributor blind to the shims being
+        unregistered or dispatching wrongly -- which is exactly how both went
+        unpatched. This drives them directly and fakes them into ``os`` so the
+        ``install()`` wiring is exercised everywhere.
+        """
+        import importlib
+
+        from monkeyfs.patching import patches
+        from monkeyfs.patching.core import _originals
+
+        # monkeyfs.patching re-exports install(), which shadows the submodule
+        # of the same name on a plain import.
+        install_mod = importlib.import_module("monkeyfs.patching.install")
+
+        _outside, _root, fs = self._sandbox(tmp_path)
+
+        host_calls = []
+
+        def recorder(name):
+            def fake(*args, **kwargs):
+                host_calls.append((name, args, kwargs))
+
+            return fake
+
+        monkeypatch.setitem(_originals, "lchmod", recorder("lchmod"))
+        monkeypatch.setitem(_originals, "lchflags", recorder("lchflags"))
+
+        with patch(fs):
+            for call in (
+                lambda: patches._vfs_lchmod("/link", 0o600),
+                lambda: patches._vfs_lchflags("/link", 0),
+                lambda: patches._vfs_lchflags("/target.txt", 0),
+            ):
+                with pytest.raises(OSError) as exc:
+                    call()
+                assert exc.value.errno == errno.ENOTSUP
+
+        assert host_calls == [], (
+            "an active filesystem must not reach the host lchmod/lchflags"
+        )
+
+        # With no filesystem active the shims are pass-throughs.
+        patches._vfs_lchmod("/link", 0o600)
+        patches._vfs_lchflags("/link", 0)
+        assert [name for name, _, _ in host_calls] == ["lchmod", "lchflags"]
+
+        # And install() actually registers them. On a platform without the
+        # pair, fake them in so the registration still gets exercised.
+        had = {name: getattr(os, name, None) for name in ("lchmod", "lchflags")}
+        try:
+            os.lchmod = recorder("lchmod")  # type: ignore[assignment]
+            os.lchflags = recorder("lchflags")  # type: ignore[assignment]
+            install_mod._apply_patches()
+
+            assert os.lchmod is patches._vfs_lchmod
+            assert os.lchflags is patches._vfs_lchflags
+        finally:
+            # Put back what was there -- on BSD that is the shim install()
+            # applied for real, and dropping it would leave the rest of the
+            # session unpatched.
+            for name, value in had.items():
+                if value is None:
+                    delattr(os, name)
+                else:
+                    setattr(os, name, value)

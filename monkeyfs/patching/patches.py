@@ -798,13 +798,72 @@ def _vfs_link(src: str, dst: str, **kwargs: Any) -> None:
     return _originals["link"](src, dst, **kwargs)
 
 
-def _vfs_chmod(path: str, mode: int, **kwargs: Any) -> None:
-    """FileSystem-aware os.chmod() replacement."""
+def _vfs_chmod(
+    path: Any, mode: int, *, follow_symlinks: bool = True, **kwargs: Any
+) -> None:
+    """FileSystem-aware os.chmod() replacement.
+
+    ``follow_symlinks=False`` is refused on a symlink rather than dropped, for
+    the same reason ``_vfs_utime()`` refuses it: no backend exposes an
+    ``lchmod()``, so the link's own permission bits cannot be set, and quietly
+    following the link rewrites the mode of the target -- exactly the file the
+    flag exists to protect. The refusal is narrow: it fires only when the flag
+    is ``False`` *and* the path is a link, so ordinary calls are untouched.
+
+    ``pathlib.Path.lchmod(mode)`` is defined as ``chmod(mode,
+    follow_symlinks=False)``, so it is the route into this on every platform,
+    including the ones with no ``os.lchmod`` at all. ``shutil`` never reaches
+    the refusal, because ``_vfs_chmod`` is deliberately absent from
+    ``os.supports_follow_symlinks`` and ``copystat()`` substitutes a no-op for
+    anything missing from that set.
+    """
     fs = current_fs.get()
-    if fs is not None:
-        _reject_dir_fd("chmod", **kwargs)
-        return _require(fs, "chmod")(str(path), mode)
-    return _originals["chmod"](path, mode, **kwargs)
+    if fs is None:
+        return _originals["chmod"](
+            path, mode, follow_symlinks=follow_symlinks, **kwargs
+        )
+
+    _reject_dir_fd("chmod", **kwargs)
+    path_str = str(path)
+
+    if not follow_symlinks and _fs_islink(fs, path_str):
+        raise OSError(
+            errno.ENOTSUP,
+            "follow_symlinks=False is not supported by os.chmod() on a "
+            "symbolic link while a monkeyfs filesystem is active",
+            path_str,
+        )
+
+    return _require(fs, "chmod")(path_str, mode)
+
+
+def _vfs_lchmod(path: Any, mode: int, **kwargs: Any) -> None:
+    """FileSystem-aware os.lchmod() replacement (BSD/macOS only).
+
+    ``os.lchmod(path, mode)`` *is* ``os.chmod(path, mode,
+    follow_symlinks=False)`` -- CPython documents it that way and implements it
+    with the same syscall -- so it routes through the same shim rather than
+    growing a second set of rules: refused on a symlink, since no backend can
+    set a link's own mode and following it would rewrite the target's, and an
+    ordinary ``chmod`` on anything else, where there is no link to protect.
+
+    Left unpatched it was a plain escape: ``os.lchmod("/etc/passwd", ...)``
+    inside a ``patch()`` context reached the host and changed a real file's
+    permissions. It exists on BSD/macOS only, which is why no CI run could
+    catch it until the matrix grew a macOS job.
+
+    ``shutil.copymode(src, dst, follow_symlinks=False)`` is the one stdlib
+    caller, taken when *both* paths are links; it calls this with no exception
+    handling of any kind in CPython 3.10 through 3.14, so the ENOTSUP
+    propagates out to the caller. That is the honest answer -- it is what a
+    real ``lchmod()`` returns on a filesystem that cannot chmod a link -- and
+    the alternative, a silent no-op, would report success for a permission
+    change nothing performed. ``copystat()`` is unaffected: it calls
+    ``os.chmod`` with ``follow_symlinks=``, never ``os.lchmod``.
+    """
+    if current_fs.get() is not None:
+        return _vfs_chmod(path, mode, follow_symlinks=False, **kwargs)
+    return _originals["lchmod"](path, mode, **kwargs)
 
 
 def _vfs_chown(path: str, uid: int, gid: int, **kwargs: Any) -> None:
@@ -838,6 +897,27 @@ def _vfs_chflags(path: Any, flags: int, **kwargs: Any) -> None:
             str(path),
         )
     return _originals["chflags"](path, flags, **kwargs)
+
+
+def _vfs_lchflags(path: Any, flags: int, **kwargs: Any) -> None:
+    """FileSystem-aware os.lchflags() replacement (BSD/macOS only).
+
+    The link-only sibling of ``os.chflags()``, and refused for the same reason
+    and with the same errno: BSD file flags are not part of the ``FileSystem``
+    protocol and no backend carries them. Unpatched, it set flags on whatever
+    the virtual path happened to name on the host.
+
+    Nothing in the stdlib calls it -- ``shutil.copystat()`` uses ``chflags``
+    with ``follow_symlinks=`` -- but it is the same escape for any caller that
+    does, so it is shimmed rather than left to be found later.
+    """
+    if current_fs.get() is not None:
+        raise OSError(
+            errno.ENOTSUP,
+            "lchflags() is not supported while a monkeyfs filesystem is active",
+            str(path),
+        )
+    return _originals["lchflags"](path, flags, **kwargs)
 
 
 # Extended attributes (Linux only).
