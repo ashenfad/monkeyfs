@@ -2159,3 +2159,87 @@ class TestBsdLinkShims:
                     delattr(os, name)
                 else:
                     setattr(os, name, value)
+
+
+class TestUnsuppliedKwargsAreNotSynthesized:
+    """Outside ``patch()`` a shim forwards exactly what it was handed.
+
+    This is a contract test, not a bug reproduction. Every default involved is
+    ``True`` on the platforms this project supports, so ``os.chmod(p, m)`` and
+    ``os.chmod(p, m, follow_symlinks=True)`` do the same thing and nothing here
+    was ever observably wrong. What it pins is the invariant the shims exist to
+    hold: with no filesystem active they are inert, which means the real
+    function is called with the caller's arguments and not with arguments the
+    shim invented. A shim that declares ``follow_symlinks: bool = True`` and
+    forwards it unconditionally turns "the caller omitted this" into "the
+    caller asked for this" -- the same conflation ``_vfs_utime`` already avoids
+    for ``ns=``, where an explicit ``None`` is an error rather than an absence
+    and only a sentinel can tell them apart.
+
+    The assertions are on what reaches ``_originals``, since that is the whole
+    of the claim: there is no downstream effect to observe instead.
+    """
+
+    @staticmethod
+    def _recorder(monkeypatch, name):
+        """Stand in for the real function and record how it was called."""
+        from monkeyfs.patching.core import _originals
+
+        calls: list[tuple[tuple, dict]] = []
+
+        def fake(*args, **kwargs):
+            calls.append((args, kwargs))
+            return None
+
+        monkeypatch.setitem(_originals, name, fake)
+        return calls
+
+    # (key in _originals, shim attribute, positional arguments)
+    _SHIMS = [
+        ("utime", "_vfs_utime", ("/f.txt",)),
+        ("chmod", "_vfs_chmod", ("/f.txt", 0o644)),
+        ("listxattr", "_vfs_listxattr", ("/f.txt",)),
+        ("getxattr", "_vfs_getxattr", ("/f.txt", "user.a")),
+        ("setxattr", "_vfs_setxattr", ("/f.txt", "user.a", b"v")),
+        ("removexattr", "_vfs_removexattr", ("/f.txt", "user.a")),
+    ]
+
+    @pytest.mark.parametrize(
+        "original,shim_name,args", _SHIMS, ids=[shim[0] for shim in _SHIMS]
+    )
+    def test_follow_symlinks_is_absent_unless_the_caller_passed_it(
+        self, monkeypatch, original, shim_name, args
+    ):
+        """Omitted stays omitted; supplied is forwarded verbatim."""
+        from monkeyfs.patching import patches
+
+        calls = self._recorder(monkeypatch, original)
+        shim = getattr(patches, shim_name)
+
+        shim(*args)
+        assert "follow_symlinks" not in calls[-1][1], (
+            f"{original} was handed a follow_symlinks the caller never passed"
+        )
+
+        shim(*args, follow_symlinks=False)
+        assert calls[-1][1]["follow_symlinks"] is False
+
+        shim(*args, follow_symlinks=True)
+        assert calls[-1][1]["follow_symlinks"] is True
+
+    def test_utime_forwards_nothing_the_caller_left_out(self, monkeypatch):
+        """``ns`` and ``follow_symlinks`` both stay off the call.
+
+        ``times`` is passed positionally on purpose: it is a
+        positional-or-keyword parameter whose real default *is* ``None``, so
+        supplying it is the same call the caller made.
+        """
+        from monkeyfs.patching import patches
+
+        calls = self._recorder(monkeypatch, "utime")
+
+        patches._vfs_utime("/f.txt")
+        assert calls[-1] == (("/f.txt", None), {})
+
+        patches._vfs_utime("/f.txt", ns=(1, 2))
+        assert calls[-1] == (("/f.txt", None), {"ns": (1, 2)})
