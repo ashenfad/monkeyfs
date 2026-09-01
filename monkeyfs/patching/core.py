@@ -48,7 +48,13 @@ _originals: dict[str, Any] = {
     "symlink": os.symlink,
     **({"link": os.link} if hasattr(os, "link") else {}),
     "chmod": os.chmod,
+    # The link-only variants exist on BSD/macOS and not on Linux, so an
+    # unpatched one is invisible on the platform this project tested for its
+    # first five releases. Guarded individually rather than off one probe:
+    # CPython defines os.lchmod only where the platform has a working one.
+    **({"lchmod": os.lchmod} if hasattr(os, "lchmod") else {}),
     **({"chflags": os.chflags} if hasattr(os, "chflags") else {}),
+    **({"lchflags": os.lchflags} if hasattr(os, "lchflags") else {}),
     "truncate": os.truncate,
     **({"chown": os.chown} if hasattr(os, "chown") else {}),
     # Low-level fd operations
