@@ -4,13 +4,31 @@ on:
   # Every branch, not just main: a platform-specific failure should surface on
   # the push that introduced it rather than waiting for a pull request to be
   # opened. Both triggers fire on a branch that has a PR open, so runs are
-  # grouped by branch below and the older one is cancelled.
+  # grouped by head repository and branch below and the older one is cancelled
+  # -- which is only true since the group key stopped mixing `refs/heads/foo`
+  # with `foo`.
   push:
   pull_request:
     branches: [ main ]
 
+# One group per branch, whichever trigger produced the run. The two halves of
+# the key each have to be spelled twice because neither event carries the
+# other's context:
+#
+# * the branch is `github.head_ref` on a pull_request ("foo") and empty on a
+#   push, where the same branch is `github.ref_name` ("foo"). `github.ref` is
+#   what this used to use, and it is `refs/heads/foo` on the push and
+#   `refs/pull/17/merge` on the pull_request -- so the two runs for one commit
+#   landed in different groups, neither cancelled the other, and a push to a
+#   branch with a PR open ran both seven-job matrices.
+# * the repository is the *head* repository, not `github.repository`. On a
+#   pull_request the latter is always this repo even when the branch lives in
+#   a fork, so two forks pushing a branch called `patch-1` would share a group
+#   and cancel each other's runs. `github.event.pull_request.head.repo` is
+#   absent on a push (a missing property evaluates to the empty string, which
+#   `||` falls through), and there the pushed-to repo is the head repo.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
