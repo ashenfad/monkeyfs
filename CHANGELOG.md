@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.7] - 2026-08-31
 
 ### Security
 - **Unpatched `os` functions carried virtual paths to the real filesystem.** `os.chflags()`, `os.lchmod()`, `os.lchflags()` and the four extended-attribute functions were never patched, so with a filesystem active they operated on the host: `os.lchmod("/etc/passwd", 0o600)` inside `patch()` changed a real file's mode, silently. All are shimmed now. The BSD-only ones could never have been caught -- CI ran ubuntu only, where they do not exist -- so macOS jobs were added first, to verify the fix where the functions are real.
