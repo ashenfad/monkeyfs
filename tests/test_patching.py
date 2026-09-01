@@ -1875,6 +1875,42 @@ class TestChmodFollowSymlinks:
         )
         assert refused is not None and refused.errno == errno.ENOTSUP
 
+    def test_path_chmod_routes_through_the_filesystem(self, tmp_path):
+        """``Path.chmod()`` must not reach the host, on any supported version.
+
+        On Python 3.10 ``pathlib`` routes through ``_NormalAccessor``, whose
+        ``chmod`` is a reference to ``os.chmod`` captured at import -- and
+        unlike ``stat``, ``open``, ``unlink`` and the rest of that class,
+        ``chmod`` was never re-bound to the shim. So every ``Path.chmod()``
+        and ``Path.lchmod()`` inside a ``patch()`` context went straight to
+        the real filesystem there. 3.11 dropped the accessor and calls
+        ``os.chmod`` directly, which is why this was only ever wrong on the
+        oldest supported version.
+        """
+        import contextlib
+        import stat as stat_mod
+        from pathlib import Path
+
+        root, fs = self._sandbox(tmp_path)
+        outside = tmp_path / "outside.txt"
+        outside.write_text("a real file, outside the sandbox")
+        outside.chmod(0o644)
+
+        with patch(fs):
+            # An absolute host path is resolved inside the sandbox, where it
+            # names nothing -- it must never land on the real file.
+            with contextlib.suppress(OSError):
+                Path(str(outside)).chmod(0o600)
+            with contextlib.suppress(OSError):
+                Path("/target.txt").chmod(0o600)
+
+        assert stat_mod.S_IMODE(outside.lstat().st_mode) == 0o644, (
+            "Path.chmod() reached the host filesystem"
+        )
+        assert stat_mod.S_IMODE((root / "target.txt").lstat().st_mode) == 0o600, (
+            "Path.chmod() did not route through the active filesystem"
+        )
+
     def test_chmod_on_a_link_follows_by_default(self, tmp_path):
         """The default is unchanged: it chmods the target."""
         import stat as stat_mod
