@@ -702,11 +702,21 @@ class TestUnknownAttributesFailClosed:
         ro = ReadOnlyFS(VirtualFS({}))
         with pytest.raises(AttributeError):
             ro.__wrapped__
+
+    def test_copy_and_pickle_survive(self):
+        """A passthrough that forwards ``_fs`` recurses forever here.
+
+        ``copy`` and ``pickle`` build the new instance without calling
+        ``__init__``, so the first ``self._fs`` lookup lands in ``__getattr__``,
+        which looks up ``self._fs``.
+        """
         import copy
         import pickle
 
-        assert copy.copy(ro) is not None
-        assert pickle.dumps is not None  # import guard only
+        ro = ReadOnlyFS(VirtualFS({}))
+        assert isinstance(copy.copy(ro), ReadOnlyFS)
+        assert isinstance(copy.deepcopy(ro), ReadOnlyFS)
+        assert isinstance(pickle.loads(pickle.dumps(ro))._fs, VirtualFS)
 
 
 class TestReadsThroughPatchedOS:
