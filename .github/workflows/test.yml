@@ -1,17 +1,42 @@
 name: Tests
 
 on:
+  # Every branch, not just main: a platform-specific failure should surface on
+  # the push that introduced it rather than waiting for a pull request to be
+  # opened. Both triggers fire on a branch that has a PR open, so runs are
+  # grouped by branch below and the older one is cancelled.
   push:
-    branches: [ main ]
   pull_request:
     branches: [ main ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
     strategy:
+      # A red platform must not cancel the other one: the whole point of the
+      # macOS jobs is seeing which BSD-only path fails while Linux stays green.
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        # macOS runs the ends of the range rather than every version. What
+        # differs on macOS is the platform surface, not the interpreter:
+        # os.chflags/lchmod/lchflags exist, the xattr family does not, and
+        # shutil takes its fcopyfile path -- none of that varies by Python
+        # version. What does vary is the version-conditional patching in
+        # install(), and 3.10 and 3.14 are its two extremes (pathlib's
+        # _NormalAccessor on 3.10; _rmtree_impl and glob's 3-tuple scandir on
+        # 3.14), so the ends cover both axes at 7 jobs instead of 10.
+        include:
+          - os: macos-latest
+            python-version: "3.10"
+          - os: macos-latest
+            python-version: "3.14"
 
     steps:
     - uses: actions/checkout@v4
