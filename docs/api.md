@@ -72,7 +72,7 @@ with patch(isolated):
 
 ### `ReadOnlyFS(fs)`
 
-Wraps any filesystem and blocks all write operations with `PermissionError`. Read operations delegate transparently via `__getattr__`.
+Wraps any filesystem and enforces read-only access with an allowlist: the operations named as read-only are forwarded, and everything else raises `PermissionError`.
 
 ```python
 from monkeyfs import VirtualFS, ReadOnlyFS
@@ -85,11 +85,17 @@ ro.read("data.csv")       # b"a,b,c"
 ro.write("x.txt", b"hi")  # PermissionError: Read-only filesystem
 ```
 
-**Blocked operations:** `open` (write/append/exclusive modes), `write`, `write_many`, `remove`, `remove_many`, `mkdir`, `makedirs`, `rename`, `rmdir`, `replace`, `symlink`, `link`, `chmod`, `chown`, `truncate`.
+**Allowed operations** (`monkeyfs.readonly.READ_METHODS`): `open` (read modes), `read`, `stat`, `exists`, `isfile`, `isdir`, `islink`, `lexists`, `list`, `list_detailed`, `glob`, `getsize`, `realpath`, `samefile`, `readlink`, `resolve_path`, `get_metadata_snapshot`, `invalidate`, `access`, `getcwd`, `chdir`.
 
-**Allowed operations:** All read operations delegate transparently -- `open` (read mode), `read`, `stat`, `exists`, `isfile`, `isdir`, `list`, `glob`, `getcwd`, `chdir`, etc.
+**Refused operations** (`monkeyfs.readonly.WRITE_METHODS`): `open` (write/append/exclusive/update modes), `write`, `write_many`, `remove`, `remove_many`, `mkdir`, `makedirs`, `rename`, `rmdir`, `replace`, `symlink`, `link`, `chmod`, `chown`, `truncate`, `utime`, and `MountFS`'s `mount` / `unmount`.
+
+**Everything else is refused too.** An attribute on neither list -- a method a backend added, a data attribute such as `IsolatedFS.root` -- raises `PermissionError` naming it and saying which set to add it to. This is what keeps a backend from widening the wrapper's guarantee: a denylist forwards any mutating method it does not name, so `IsolatedFS` gaining `utime()` silently made `os.utime()` writable through a read-only wrapper. The cost is the inverse failure -- a genuinely read-only method that nobody classified is refused -- which is the right direction for a wrapper whose entire purpose is a guarantee.
+
+**`chdir()` is a read.** It moves the filesystem's own working directory and stores nothing, and it is a required protocol method, so refusing it would break `os.chdir()` under every read-only mount.
 
 **`access()`:** Returns `False` for `os.W_OK`, delegates for `os.R_OK` and `os.F_OK`.
+
+**Private and dunder attributes are never forwarded**, so `copy`, `pickle` and `inspect` get the `AttributeError` they probe for. The wrapped filesystem stays reachable as `ro._fs` for callers that deliberately want past the wrapper.
 
 ### `MountFS(base, mounts=None)`
 
@@ -213,5 +219,6 @@ current_fs.get()  # None (no patching active)
 - **`os.utime(follow_symlinks=False)` refuses on a symlink** -- The flag means "stamp the link, not its target", and no backend exposes an `lutime()`, so the link's own timestamps are unreachable. Following the link instead would write to the very file the flag exists to protect, so while `patch()` is in effect the call raises `OSError(errno.ENOTSUP)` -- the same answer, for the same reason, as `dir_fd`. The refusal is narrow: it fires only when the flag is `False` *and* the path is a symlink, so ordinary `os.utime()` calls are unaffected. `shutil` never reaches it, because the patched `os.utime` is deliberately left out of `os.supports_follow_symlinks` and `copystat()` substitutes a no-op for anything missing from that set.
 - **`os.chmod(follow_symlinks=False)` and `os.lchmod()` refuse on a symlink** -- Both mean "the link's own mode, not its target's", and no backend exposes an `lchmod()`, so the link's permission bits are unreachable; following the link instead would rewrite the mode of the very file the flag exists to protect. While `patch()` is in effect the call raises `OSError(errno.ENOTSUP)`, the same answer `os.utime(follow_symlinks=False)` and `dir_fd` get. The refusal is narrow -- the path must actually be a link -- so `os.chmod()` and `os.lchmod()` on a plain file behave normally. `pathlib.Path.lchmod()` is defined as `chmod(mode, follow_symlinks=False)`, so it lands here too, on every platform. `shutil.copystat()` never trips it (the patched `os.chmod` is deliberately left out of `os.supports_follow_symlinks`), but `shutil.copymode(src, dst, follow_symlinks=False)` between two symlinks does: it calls `os.lchmod()` with no error handling at all in CPython 3.10-3.14, so the `ENOTSUP` surfaces to the caller rather than a mode change being silently dropped. On Linux, where `os.lchmod` does not exist, `copymode()` skips that branch entirely.
 - **Extended attributes are absent, not forwarded** -- The xattr family is Linux-only, and no backend stores extended attributes. While `patch()` is in effect, `os.listxattr()` returns `[]` -- the file genuinely has none -- `os.getxattr()` raises `OSError(errno.ENODATA)`, and `os.setxattr()` / `os.removexattr()` raise `OSError(errno.ENOTSUP)` so a write fails loudly instead of being silently dropped. None of them looks at the host, so a virtual path never reaches a real file. `shutil.copystat()` (and `copy2()`, `copytree()`) and `pathlib.Path.copy()` tolerate exactly these errnos and carry on.
+- **A write-mode `os.open()` under `ReadOnlyFS` is refused at `os.close()`** -- The fd table buffers a virtual fd in memory and calls `fs.write()` only when the fd is closed, so `os.open(path, os.O_WRONLY)` on an existing file succeeds and `os.write()` into it appears to, while the `PermissionError` arrives at `os.close()`. No content reaches the wrapped filesystem, but code that never closes the fd never sees the refusal. `builtins.open()` in a write mode, and `os.open()` with `O_CREAT` on a new path, are both refused at the call itself.
 - **C-level syscalls** -- Libraries that call the OS directly from C extensions (e.g. SQLite, `mmap`) bypass Python-level patches entirely. Only Python-level file operations are intercepted.
 - **`fcntl` locking** -- `fcntl`, `flock`, and `lockf` are no-ops under VFS since virtual files have no real file descriptors. Code that depends on advisory locking semantics will not see contention.
