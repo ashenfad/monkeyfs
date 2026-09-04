@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Updating a file through an absolute path split its metadata row.** `_update_file_metadata()` normalized the path only when creating, so a create-then-update through the same absolute path left a stale `workspace/x` row beside `/workspace/x`: `stat()` reported the stale size and consumers saw two rows for one file (shell `>` vs `>>` looked like different paths for this reason -- the shell passes the same path both times). Keys now resolve unconditionally, matching the `normalize(resolve(path))` idiom the other metadata writers already use.
+
 ## [0.1.7] - 2026-08-31
 
 ### Security
