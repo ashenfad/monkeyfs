@@ -283,9 +283,11 @@ class VirtualFS:
         metadata = self._get_metadata()
         now = self._now_iso()
 
-        if is_new:
-            # Metadata keys must be normalized to match _encode_path
-            path = self._normalize_path(path)
+        # Metadata keys must be normalized to match _encode_path — on
+        # update as well as create. Callers pass whatever form they
+        # hold (absolute, cwd-relative), and resolving here keeps one
+        # row per file no matter which form each write used.
+        path = self._normalize_path(self.resolve_path(path))
 
         if is_new or path not in metadata:
             # New file - set both created_at and modified_at
