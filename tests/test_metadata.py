@@ -1,5 +1,7 @@
 """Tests for VirtualFS file metadata tracking."""
 
+import json
+
 from monkeyfs import VirtualFS
 
 
@@ -57,6 +59,39 @@ class TestFileMetadata:
 
         # File and metadata gone
         assert not vfs.exists("file.txt")
+
+    def test_update_keeps_single_metadata_row(self):
+        """Updating through an absolute path must not split the row.
+
+        Regression: only creates normalized the metadata key, so a
+        create-then-update through the same absolute path left a stale
+        row beside the new one — stat went stale and consumers saw two
+        rows for one file.
+        """
+        state: dict = {}
+        vfs = VirtualFS(state)
+
+        vfs.write("/workspace/x", b"file")
+        vfs.write("/workspace/x", b"file main")
+
+        assert vfs.stat("/workspace/x").size == 9
+        table = json.loads(state[VirtualFS.METADATA_KEY])
+        assert sorted(k for k in table if "x" in k) == ["workspace/x"]
+
+    def test_append_keeps_single_metadata_row(self):
+        """Append mode must update the create row, not add one."""
+        state: dict = {}
+        vfs = VirtualFS(state)
+
+        vfs.write("/workspace/x", b"file")
+        created = vfs.stat("/workspace/x").created_at
+        vfs.write("/workspace/x", b" more", mode="a")
+
+        meta = vfs.stat("/workspace/x")
+        assert meta.size == 9
+        assert meta.created_at == created
+        table = json.loads(state[VirtualFS.METADATA_KEY])
+        assert sorted(k for k in table if "x" in k) == ["workspace/x"]
 
     def test_stat_fails_for_nonexistent_file(self):
         """Test that stat() raises FileNotFoundError for missing files."""
