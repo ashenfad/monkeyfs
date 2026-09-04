@@ -261,8 +261,8 @@ class VirtualFS:
 
         # Account for overwriting existing file
         metadata = self._get_metadata()
-        normalized = self._normalize_path(path)
-        existing_size = metadata.get(normalized, FileMetadata(0, "", "")).size
+        _, entry = self._metadata_row(metadata, path)
+        existing_size = entry.size if entry is not None else 0
 
         new_total = current - existing_size + new_content_size
 
@@ -271,6 +271,33 @@ class VirtualFS:
                 f"VFS size limit exceeded: {new_total / 1024 / 1024:.1f}MB > "
                 f"{self._max_size_bytes / 1024 / 1024:.1f}MB"
             )
+
+    def _metadata_key(self, path: str) -> str:
+        """Canonical metadata-table key: resolved against CWD, normalized.
+
+        Blob keys encode the resolved path and directory rows are
+        written resolved, so the table must be keyed resolved too —
+        otherwise one file holds two rows depending on which form
+        each caller passed.
+        """
+        return self._normalize_path(self.resolve_path(path))
+
+    def _metadata_row(
+        self, metadata: dict[str, FileMetadata], path: str
+    ) -> tuple[str, FileMetadata | None]:
+        """(key, entry) for a path, tolerating legacy rows.
+
+        Prefers the canonical resolved key; falls back to the raw
+        normalized key for rows written before keys resolved, so old
+        state keeps working instead of orphaning.
+        """
+        key = self._metadata_key(path)
+        if key in metadata:
+            return key, metadata[key]
+        legacy = self._normalize_path(path)
+        if legacy in metadata:
+            return legacy, metadata[legacy]
+        return key, None
 
     def _update_file_metadata(self, path: str, size: int, is_new: bool) -> None:
         """Update metadata for a file (create or modify).
@@ -283,11 +310,18 @@ class VirtualFS:
         metadata = self._get_metadata()
         now = self._now_iso()
 
-        # Metadata keys must be normalized to match _encode_path — on
-        # update as well as create. Callers pass whatever form they
-        # hold (absolute, cwd-relative), and resolving here keeps one
-        # row per file no matter which form each write used.
-        path = self._normalize_path(self.resolve_path(path))
+        # Canonical key: resolved against CWD, normalized — the same
+        # form blob keys and directory rows use, no matter which form
+        # the caller passed.
+        raw = path
+        path = self._metadata_key(path)
+        if not is_new and path not in metadata:
+            legacy = self._normalize_path(raw)
+            if legacy != path and legacy in metadata:
+                # Row written before keys resolved: the same file under
+                # a stale key. Update it in place rather than splitting
+                # the row; readers find either form.
+                path = legacy
 
         if is_new or path not in metadata:
             # New file - set both created_at and modified_at
@@ -530,8 +564,8 @@ class VirtualFS:
             new_total = current
 
             for path, content in files.items():
-                normalized = self._normalize_path(path)
-                existing_size = metadata.get(normalized, FileMetadata(0, "", "")).size
+                _, entry = self._metadata_row(metadata, path)
+                existing_size = entry.size if entry is not None else 0
                 new_total = new_total - existing_size + len(content)
 
             if new_total > self._max_size_bytes:
@@ -787,10 +821,11 @@ class VirtualFS:
             raise FileNotFoundError(path)
         del self._state[key]
 
-        # Remove from metadata
-        path = self._normalize_path(path)
+        # Remove from metadata (legacy fallback: a pre-resolution row
+        # must not survive its file)
         metadata = self._get_metadata()
-        metadata.pop(path, None)
+        key, _ = self._metadata_row(metadata, path)
+        metadata.pop(key, None)
         self._set_metadata(metadata)
 
         # Invalidate caches
@@ -816,7 +851,8 @@ class VirtualFS:
         # Single metadata round-trip
         metadata = self._get_metadata()
         for path in paths:
-            metadata.pop(self._normalize_path(path), None)
+            key, _ = self._metadata_row(metadata, path)
+            metadata.pop(key, None)
         self._set_metadata(metadata)
 
         # Invalidate caches
@@ -1055,10 +1091,10 @@ class VirtualFS:
         """
         # Check for file first
         if self.isfile(path):
-            path = self._normalize_path(path)
             metadata = self._get_metadata()
-            if path in metadata:
-                return metadata[path]
+            _, entry = self._metadata_row(metadata, path)
+            if entry is not None:
+                return entry
             now = datetime.now(timezone.utc).isoformat()
             return FileMetadata(
                 size=self.getsize(path), created_at=now, modified_at=now
@@ -1066,10 +1102,10 @@ class VirtualFS:
 
         # Check for directory
         if self.isdir(path):
-            normalized = self._normalize_path(path)
             metadata = self._get_metadata()
-            if normalized in metadata:
-                return metadata[normalized]
+            _, entry = self._metadata_row(metadata, path)
+            if entry is not None:
+                return entry
             now = datetime.now(timezone.utc).isoformat()
             return FileMetadata(size=0, created_at=now, modified_at=now, is_dir=True)
 
@@ -1092,24 +1128,23 @@ class VirtualFS:
         if not self.exists(path):
             raise FileNotFoundError(path)
 
-        path = self._normalize_path(path)
         metadata = self._get_metadata()
+        key, old = self._metadata_row(metadata, path)
 
         if times is not None:
             mtime = datetime.fromtimestamp(times[1], tz=timezone.utc).isoformat()
         else:
             mtime = self._now_iso()
 
-        if path in metadata:
-            old = metadata[path]
-            metadata[path] = FileMetadata(
+        if old is not None:
+            metadata[key] = FileMetadata(
                 size=old.size,
                 created_at=old.created_at,
                 modified_at=mtime,
                 is_dir=old.is_dir,
             )
         else:
-            metadata[path] = FileMetadata(
+            metadata[key] = FileMetadata(
                 size=0,
                 created_at=mtime,
                 modified_at=mtime,

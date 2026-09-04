@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
-- **Updating a file through an absolute path split its metadata row.** `_update_file_metadata()` normalized the path only when creating, so a create-then-update through the same absolute path left a stale `workspace/x` row beside `/workspace/x`: `stat()` reported the stale size and consumers saw two rows for one file (shell `>` vs `>>` looked like different paths for this reason -- the shell passes the same path both times). Keys now resolve unconditionally, matching the `normalize(resolve(path))` idiom the other metadata writers already use.
+- **Updating a file through an absolute path split its metadata row.** `_update_file_metadata()` normalized the path only when creating, so a create-then-update through the same absolute path left a stale `workspace/x` row beside `/workspace/x`: `stat()` reported the stale size and consumers saw two rows for one file (shell `>` vs `>>` looked like different paths for this reason -- the shell passes the same path both times). The table is now keyed resolved-against-CWD everywhere: the writer resolves unconditionally, and `stat()`, `utime()`, `remove()`, `remove_many()` and both quota checks resolve too, matching the blob keys and the directory rows (which `mkdir` already wrote resolved). Rows written before this resolve on read -- canonical key first, legacy raw key as fallback -- so old state keeps working and converges on next write rather than orphaning.
 
 ## [0.1.7] - 2026-08-31
 
