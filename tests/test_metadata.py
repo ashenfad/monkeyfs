@@ -93,6 +93,71 @@ class TestFileMetadata:
         table = json.loads(state[VirtualFS.METADATA_KEY])
         assert sorted(k for k in table if "x" in k) == ["workspace/x"]
 
+    def test_relative_paths_roundtrip_under_cwd(self):
+        """Relative writes, stat, utime and remove agree under a CWD."""
+        state: dict = {}
+        vfs = VirtualFS(state)
+        vfs.makedirs("/workspace")
+        vfs.chdir("/workspace")
+
+        vfs.write("x", b"file")
+        vfs.write("x", b"file main")
+
+        meta = vfs.stat("x")
+        assert meta.size == 9
+        assert meta.created_at != meta.modified_at  # real row, not synthetic
+        table = json.loads(state[VirtualFS.METADATA_KEY])
+        assert sorted(k for k in table if "x" in k) == ["workspace/x"]
+
+        vfs.utime("x")  # must touch the row, not duplicate it
+        table = json.loads(state[VirtualFS.METADATA_KEY])
+        assert sorted(k for k in table if "x" in k) == ["workspace/x"]
+
+        vfs.remove("x")  # must drop the row, not orphan it
+        table = json.loads(state[VirtualFS.METADATA_KEY])
+        assert [k for k in table if "x" in k] == []
+
+    def test_legacy_unresolved_row_still_found(self):
+        """Rows written before keys resolved keep working.
+
+        The table holds the raw normalized key while the blob lives
+        under the resolved one; readers must find it, update it in
+        place, and remove it.
+        """
+        state: dict = {}
+        vfs = VirtualFS(state)
+        vfs.makedirs("/workspace")
+        vfs.chdir("/workspace")
+
+        key = vfs._encode_path("x")
+        state[key] = b"data"
+        stamp = "2026-01-01T00:00:00+00:00"
+        state[VirtualFS.METADATA_KEY] = json.dumps(
+            {
+                "x": {
+                    "size": 4,
+                    "created_at": stamp,
+                    "modified_at": stamp,
+                    "is_dir": False,
+                }
+            }
+        ).encode()
+        # Surgery bypasses the cache; persisted state loads cold.
+        vfs._metadata_cache = None
+
+        meta = vfs.stat("x")  # real row, not synthetic timestamps
+        assert (meta.size, meta.created_at) == (4, stamp)
+
+        vfs.write("x", b"data!")  # adopts the legacy row, no split
+        table = json.loads(state[VirtualFS.METADATA_KEY])
+        assert sorted(k for k in table if "x" in k) == ["x"]
+        assert table["x"]["size"] == 5
+        assert table["x"]["created_at"] == stamp
+
+        vfs.remove("x")
+        table = json.loads(state[VirtualFS.METADATA_KEY])
+        assert "x" not in table
+
     def test_stat_fails_for_nonexistent_file(self):
         """Test that stat() raises FileNotFoundError for missing files."""
         vfs = VirtualFS({})
