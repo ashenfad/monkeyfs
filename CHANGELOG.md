@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.8] - 2026-09-04
 
 ### Fixed
 - **Updating a file through an absolute path split its metadata row.** `_update_file_metadata()` normalized the path only when creating, so a create-then-update through the same absolute path left a stale `workspace/x` row beside `/workspace/x`: `stat()` reported the stale size and consumers saw two rows for one file (shell `>` vs `>>` looked like different paths for this reason -- the shell passes the same path both times). The table is now keyed resolved-against-CWD everywhere: the writer resolves unconditionally, and `stat()`, `utime()`, `remove()`, `remove_many()` and both quota checks resolve too, matching the blob keys and the directory rows (which `mkdir` already wrote resolved). Rows written before this resolve on read -- canonical key first, legacy raw key as fallback -- so old state keeps working and converges on next write rather than orphaning.
