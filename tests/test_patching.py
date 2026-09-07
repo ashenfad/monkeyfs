@@ -6,6 +6,7 @@ import os
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -2243,3 +2244,98 @@ class TestUnsuppliedKwargsAreNotSynthesized:
 
         patches._vfs_utime("/f.txt", ns=(1, 2))
         assert calls[-1] == (("/f.txt", None), {"ns": (1, 2)})
+
+
+class TestRealpathStrict:
+    """``os.path.realpath(strict=...)`` inside a patched context.
+
+    The backends resolve lexically and answer for a name that is not there, so
+    without an existence check in the shim a missing file resolved to a path
+    the caller then took for a real one -- ``Path.resolve(strict=True)``
+    returned ``/missing`` rather than raising, on every interpreter.
+    """
+
+    @pytest.fixture(params=["virtual", "isolated"])
+    def fs(self, request, tmp_path):
+        """A filesystem holding ``here`` and nothing else, in both flavours."""
+        if request.param == "virtual":
+            vfs = VirtualFS({})
+            vfs.write("here", b"content")
+            return vfs
+
+        from monkeyfs import IsolatedFS
+
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "here").write_text("content")
+        return IsolatedFS(str(root))
+
+    def test_strict_raises_on_missing_path(self, fs):
+        """A path the filesystem does not hold raises, rather than resolving."""
+        with patch(fs):
+            with pytest.raises(FileNotFoundError) as excinfo:
+                os.path.realpath("missing", strict=True)
+            assert excinfo.value.errno == errno.ENOENT
+            assert excinfo.value.filename == "missing"
+
+            with pytest.raises(FileNotFoundError):
+                Path("missing").resolve(strict=True)
+
+    def test_strict_raises_outside_the_filesystem(self, fs):
+        """A path outside the filesystem is missing from the caller's side too."""
+        with patch(fs):
+            with pytest.raises(FileNotFoundError):
+                os.path.realpath("/etc/nope/x", strict=True)
+
+            # Non-strict still answers with the resolved virtual path.
+            assert os.path.realpath("/etc/nope/x") == "/etc/nope/x"
+
+    def test_non_strict_still_resolves_a_missing_path(self, fs):
+        """The default behaviour is unchanged: resolve, do not check."""
+        with patch(fs):
+            assert os.path.realpath("missing") == "/missing"
+            assert os.path.realpath("./missing") == "/missing"
+            assert str(Path("missing").resolve()) == "/missing"
+
+    def test_existing_path_resolves_under_both_forms(self, fs):
+        """Strictness costs nothing when the file is actually there."""
+        with patch(fs):
+            assert os.path.realpath("here") == "/here"
+            assert os.path.realpath("here", strict=True) == "/here"
+            assert str(Path("here").resolve(strict=True)) == "/here"
+
+    def test_strict_agrees_with_exists_on_a_safe_system_path(self, fs):
+        """A host path readable through the passthrough is not "missing".
+
+        ``os.path.exists()`` reports a safe system path as present, so
+        ``realpath(strict=True)`` has to as well or the two disagree about the
+        interpreter's own path inside one patched block.
+        """
+        exe = os.path.realpath(sys.executable)
+
+        with patch(fs):
+            assert os.path.exists(exe)
+            assert os.path.realpath(exe, strict=True) == exe
+
+    @pytest.mark.skipif(
+        not hasattr(os.path, "ALLOW_MISSING"),
+        reason="os.path.ALLOW_MISSING arrived in 3.13.4",
+    )
+    def test_allow_missing_tolerates_a_missing_path(self, fs):
+        """``ALLOW_MISSING`` is truthy but asks for exactly today's behaviour."""
+        with patch(fs):
+            assert (
+                os.path.realpath("missing", strict=os.path.ALLOW_MISSING) == "/missing"
+            )
+
+    def test_unpatched_realpath_is_untouched(self, tmp_path):
+        """Outside ``patch()`` the shim forwards nothing the caller left out."""
+        target = tmp_path / "real"
+        target.write_text("x")
+
+        assert os.path.realpath(str(target)) == os.path.realpath(str(target))
+        assert os.path.realpath(str(target), strict=True) == str(
+            Path(str(target)).resolve()
+        )
+        with pytest.raises(OSError):
+            os.path.realpath(str(tmp_path / "nope" / "deeper"), strict=True)

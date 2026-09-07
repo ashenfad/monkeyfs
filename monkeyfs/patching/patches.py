@@ -23,6 +23,28 @@ from .core import (
 )
 from .fdtable import _fd_table, _wrap_virtual_fd
 
+# Default for every optional keyword the shims accept but do not themselves
+# need a value for. It marks "the caller did not supply this", which is not the
+# same fact as any concrete value: os.utime's ``ns`` has no default at all in
+# the real signature, so an explicit ``ns=None`` is an error rather than an
+# absence, and only a sentinel can tell the two apart.
+#
+# The rest of the surface takes the same treatment for a different reason. A
+# shim that declared ``follow_symlinks: bool = True`` and forwarded it
+# unconditionally rewrote a bare ``os.chmod(p, mode)`` into ``os.chmod(p, mode,
+# follow_symlinks=True)`` on its way to the real function, turning "omitted"
+# into "explicitly requested". With no filesystem active a shim is supposed to
+# be inert -- indistinguishable from the function it replaced -- and inventing
+# an argument the caller never wrote is not inert, whatever the value happens
+# to be.
+_UNSET: Any = object()
+
+# os.path.realpath(strict=os.path.ALLOW_MISSING) asks for strict resolution
+# that still tolerates a missing final component. It arrived in 3.13.4 and was
+# backported, so it is absent on older patch releases -- and it is truthy, so
+# the realpath shim has to name it rather than test the flag for truth.
+_ALLOW_MISSING: Any = getattr(os.path, "ALLOW_MISSING", object())
+
 
 def _fspath_str(path: Any) -> str | None:
     """Coerce a path argument to ``str``, or ``None`` if it is not a path.
@@ -523,20 +545,53 @@ def _vfs_samefile(path1: str, path2: str, **kwargs: Any) -> bool:
     return _originals["samefile"](path1, path2, **kwargs)
 
 
-def _vfs_realpath(path: str | os.PathLike[Any], **kwargs: Any) -> str:
-    """FileSystem-aware os.path.realpath() replacement."""
+def _vfs_realpath(
+    path: str | os.PathLike[Any], *, strict: Any = _UNSET, **kwargs: Any
+) -> str:
+    """FileSystem-aware os.path.realpath() replacement.
+
+    ``strict=True`` means "raise if the path does not exist". Every backend
+    resolves lexically and answers for a name that is not there, so the
+    existence check has to be made here or a missing file resolves to a path
+    the caller then takes for a real one -- and the refusal for a path outside
+    the filesystem has to be the same ``FileNotFoundError``, since from the
+    caller's side nothing is there either.
+
+    ``strict`` is not always a bool: ``os.path.ALLOW_MISSING`` asks for strict
+    resolution that still tolerates a missing *final* component, which is what
+    the lexical answer below already gives. It is truthy, so only a literal
+    ``True`` may demand existence.
+    """
+    if strict is not _UNSET:
+        kwargs["strict"] = strict
+
     if _in_safe_path_check.get():
         return _originals["realpath"](path, **kwargs)
 
     fs = current_fs.get()
     if fs is not None:
         path_str = str(path)
+        must_exist = (
+            strict is not _UNSET and bool(strict) and strict is not _ALLOW_MISSING
+        )
         try:
-            return _require(fs, "realpath")(path_str)
+            resolved = _require(fs, "realpath")(path_str)
         except PermissionError:
             if _is_safe_system_path(path):
                 return _originals["realpath"](path, **kwargs)
+            if must_exist:
+                raise FileNotFoundError(
+                    errno.ENOENT, os.strerror(errno.ENOENT), path_str
+                ) from None
             return os.path.normpath(os.path.join("/", path_str))
+        # Existence is asked through the shim rather than of the filesystem
+        # directly, so that "does it exist" gets one answer inside a patched
+        # block: os.path.exists() reports a safe system path as present via the
+        # read-only host passthrough, and realpath(strict=True) on the
+        # interpreter's own path has to agree with it.
+        if must_exist and not _vfs_exists(resolved):
+            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), path_str)
+        return resolved
 
     return _originals["realpath"](path, **kwargs)
 
@@ -628,23 +683,6 @@ def _vfs_expandvars(path: str | os.PathLike[Any]) -> str:
         return path_str
 
     return _originals["expandvars"](path)
-
-
-# Default for every optional keyword the shims accept but do not themselves
-# need a value for. It marks "the caller did not supply this", which is not the
-# same fact as any concrete value: os.utime's ``ns`` has no default at all in
-# the real signature, so an explicit ``ns=None`` is an error rather than an
-# absence, and only a sentinel can tell the two apart.
-#
-# The rest of the surface takes the same treatment for a different reason. A
-# shim that declared ``follow_symlinks: bool = True`` and forwarded it
-# unconditionally rewrote a bare ``os.chmod(p, mode)`` into ``os.chmod(p, mode,
-# follow_symlinks=True)`` on its way to the real function, turning "omitted"
-# into "explicitly requested". With no filesystem active a shim is supposed to
-# be inert -- indistinguishable from the function it replaced -- and inventing
-# an argument the caller never wrote is not inert, whatever the value happens
-# to be.
-_UNSET: Any = object()
 
 
 def _supplied(**maybe: Any) -> dict[str, Any]:
