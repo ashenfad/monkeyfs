@@ -29,6 +29,12 @@ with patch(vfs):
         print(f.read())           # name,score\nalice,98\nbob,87\n
 ```
 
+## Not a security boundary
+
+monkeyfs is a cooperative routing layer, not a sandbox. It rebinds stdlib functions so that Python code asking for a file gets the one the active filesystem holds -- and that is the whole of it. Only Python-level file operations are intercepted: `ctypes`, `subprocess`, `socket`, `mmap`, `sqlite3` and any C extension talk to the OS directly and reach the host filesystem untouched. `monkeyfs.suspend()` is an ordinary importable that turns the routing off from inside a patched block.
+
+So the `PermissionError -- outside root` below is a routing decision, not a wall -- useful for keeping cooperative code inside its lane, and worth nothing against code that is trying to leave. Confining untrusted code is the job of whatever controls the import surface around it -- [sandtrap](https://github.com/ashenfad/sandtrap) in this stack -- or of an OS-level boundary such as a container or a VM. monkeyfs is what those hand the confined code to read and write; it is not what keeps the code confined.
+
 ## IsolatedFS
 
 Restricts file operations to a root directory on the real filesystem:
