@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- **`Path.replace()`, `Path.symlink_to()`, `Path.hardlink_to()` / `Path.link_to()` and `Path.readlink()` escaped to the host on Python 3.10.** Each of `pathlib._NormalAccessor`'s attributes is a reference to an `os` function captured when pathlib was imported, so patching the module later does not reach it, and `install()` rebound only eleven of them. Inside a `patch()` context `Path("l").symlink_to("t")` created a real symlink in the host CWD and `Path("l").readlink()` read it back, while `replace()` and the hard-link methods renamed and linked host files. All four are rebound now, closing the note left open in 0.1.7. `Path.expanduser()` was escaping through the same class and is rebound too: it returned the real home directory while `os.path.expanduser("~")` returned the virtual root, leaking the host path. The accessor's `realpath` is rebound for consistency rather than as a fix -- the captured original is pure Python over `os.getcwd()` and `os.lstat()`, both patched, so it already composed the right answer. 3.11 removed the accessor and calls `os` directly, so no other version was affected.
+
+### Changed
+- **The README states the threat model up front.** monkeyfs is a cooperative routing layer, not a security boundary: only Python-level file operations are intercepted, `ctypes` / `subprocess` / `socket` / `mmap` / `sqlite3` and any C extension reach the host directly, and `suspend()` is an importable escape hatch. The new section sits ahead of the `PermissionError -- outside root` examples, which read as a confinement guarantee on their own; confining untrusted code belongs to whatever controls its import surface (sandtrap, in this stack) or to an OS-level boundary.
+
 ## [0.1.8] - 2026-09-04
 
 ### Fixed
