@@ -308,7 +308,19 @@ def _apply_patches() -> None:
     _vfs_os_fstat.__name__ = "fstat"
     _vfs_os_lseek.__name__ = "lseek"
 
-    # Patch pathlib internal accessor (Python < 3.11, e.g. 3.10)
+    # Patch pathlib's internal accessor (Python < 3.11, i.e. 3.10).
+    #
+    # Every attribute of _NormalAccessor is a reference to an os (or io)
+    # function captured when pathlib was imported, so patching the module
+    # later does not reach it -- a Path method routed through an un-rebound
+    # attribute goes straight to the host filesystem from inside a patch()
+    # context. The rule is therefore: every accessor attribute holding a
+    # captured function must be rebound here, and adding a shim for a new os
+    # function means adding it below too. Rebinding is staticmethod() because
+    # the shims are Python functions and would otherwise become bound methods
+    # taking the accessor as their first argument, which the captured builtins
+    # never did. 3.11 removed the accessor and calls os directly, so none of
+    # this applies there.
     if hasattr(pathlib, "_NormalAccessor"):
         accessor = pathlib._NormalAccessor  # type: ignore
         if hasattr(accessor, "stat"):
@@ -331,13 +343,29 @@ def _apply_patches() -> None:
             accessor.listdir = staticmethod(_vfs_listdir)
         if hasattr(accessor, "getcwd"):
             accessor.getcwd = staticmethod(_vfs_getcwd)
-        # _NormalAccessor.chmod is a reference to os.chmod captured when
-        # pathlib was imported, so patching the os module later does not
-        # reach it: on 3.10, Path.chmod() and Path.lchmod() went straight to
-        # the host filesystem from inside a patch() context. 3.11 removed the
-        # accessor and calls os.chmod directly, so this is 3.10 only.
         if hasattr(accessor, "chmod"):
             accessor.chmod = staticmethod(_vfs_chmod)
+        if hasattr(accessor, "replace"):
+            accessor.replace = staticmethod(_vfs_replace)
+        if hasattr(accessor, "link"):
+            accessor.link = staticmethod(_vfs_link)
+        # Path.symlink_to() calls accessor.symlink(target, self,
+        # target_is_directory) -- three positional arguments, link target
+        # first -- so the shim has to take the flag as well as the pair.
+        if hasattr(accessor, "symlink"):
+            accessor.symlink = staticmethod(_vfs_symlink)
+        if hasattr(accessor, "readlink"):
+            accessor.readlink = staticmethod(_vfs_readlink)
+        # The two os.path captures. realpath() would compose the right answer
+        # anyway -- the original is pure Python over os.getcwd() and os.lstat(),
+        # both patched -- but rebinding it puts 3.10 on the same shim 3.11+
+        # reaches through os.path.realpath. expanduser() genuinely escaped:
+        # Path("~/x").expanduser() returned the host home directory while
+        # os.path.expanduser("~/x") returned the virtual root.
+        if hasattr(accessor, "expanduser"):
+            accessor.expanduser = staticmethod(_vfs_expanduser)
+        if hasattr(accessor, "realpath"):
+            accessor.realpath = staticmethod(_vfs_realpath)
 
     # Patch pathlib.Path._globber (Python 3.13+)
     if hasattr(pathlib.Path, "_globber"):

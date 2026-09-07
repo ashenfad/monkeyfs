@@ -1,11 +1,13 @@
 """Tests for pathlib integration with VirtualFS patching."""
 
 import os
+import pathlib
 from pathlib import Path
 
 import pytest
 
 from monkeyfs import IsolatedFS, VirtualFS, patch
+from monkeyfs.patching.core import _originals
 
 
 class TestPathlibIntegration:
@@ -250,3 +252,117 @@ class TestPathlibIntegration:
             # Test os.lstat()
             st_os = os.lstat("file.txt")
             assert st_os.st_size == 7
+
+
+# Python 3.10's pathlib routes every filesystem call through
+# pathlib._NormalAccessor, whose attributes are references to os functions
+# captured at import time -- so install() has to rebind them individually.
+# 3.11 removed the class and calls os directly, so there is nothing to check.
+requires_accessor = pytest.mark.skipif(
+    not hasattr(pathlib, "_NormalAccessor"),
+    reason="pathlib._NormalAccessor exists on Python 3.10 only",
+)
+
+
+@pytest.fixture
+def host_cwd_and_loud_originals(tmp_path, monkeypatch):
+    """Put the host CWD in an empty temp dir and trip on any escape to it.
+
+    Two independent checks on one fixture: relative paths that reach the host
+    land in the temp directory, which the test asserts stays empty, and the
+    captured originals the shims fall back to raise instead of running. The
+    directory is yielded so a test can inspect it.
+    """
+    monkeypatch.chdir(tmp_path)
+
+    def _refuse(name):
+        def fail(*args, **kwargs):
+            raise AssertionError(f"os.{name} reached the host: {args!r}")
+
+        return fail
+
+    for name in ("replace", "link", "symlink", "readlink"):
+        monkeypatch.setitem(_originals, name, _refuse(name))
+
+    yield tmp_path
+
+
+@requires_accessor
+class TestPathlibAccessor:
+    """Path methods that reach os through _NormalAccessor stay in the VFS."""
+
+    def test_accessor_replace(self, host_cwd_and_loud_originals):
+        """Path.replace() renames inside the VFS, not on the host."""
+        vfs = VirtualFS({})
+        vfs.write("a", b"content")
+
+        with patch(vfs):
+            Path("a").replace("b")
+
+        assert vfs.read("b") == b"content"
+        assert not vfs.exists("a")
+        assert list(host_cwd_and_loud_originals.iterdir()) == []
+
+    def test_accessor_symlink_to(self, host_cwd_and_loud_originals):
+        """Path.symlink_to() hits the VFS's own refusal, creating no host link."""
+        vfs = VirtualFS({})
+        vfs.write("t", b"target")
+
+        with patch(vfs):
+            with pytest.raises(PermissionError, match="does not support symlinks"):
+                Path("l").symlink_to("t")
+
+        assert list(host_cwd_and_loud_originals.iterdir()) == []
+
+    def test_accessor_hardlink_to(self, host_cwd_and_loud_originals):
+        """Path.hardlink_to() reaches VirtualFS.link(), which copies content."""
+        vfs = VirtualFS({})
+        vfs.write("t", b"target")
+
+        with patch(vfs):
+            Path("h").hardlink_to("t")
+
+        assert vfs.read("h") == b"target"
+        assert list(host_cwd_and_loud_originals.iterdir()) == []
+
+    def test_accessor_link_to(self, host_cwd_and_loud_originals):
+        """Path.link_to() passes the pair in the other order and still routes."""
+        vfs = VirtualFS({})
+        vfs.write("t", b"target")
+
+        with patch(vfs):
+            # Deprecated in 3.10 and gone in 3.12, but live wherever the
+            # accessor is: link_to(target) links *this* path to target,
+            # the reverse of hardlink_to().
+            with pytest.deprecated_call():
+                Path("t").link_to("h")
+
+        assert vfs.read("h") == b"target"
+        assert list(host_cwd_and_loud_originals.iterdir()) == []
+
+    def test_accessor_readlink(self, host_cwd_and_loud_originals):
+        """Path.readlink() asks the VFS, which holds no links."""
+        vfs = VirtualFS({})
+        vfs.write("l", b"not a link")
+
+        with patch(vfs):
+            with pytest.raises(OSError, match="Not a symbolic link"):
+                Path("l").readlink()
+
+        assert list(host_cwd_and_loud_originals.iterdir()) == []
+
+    def test_accessor_expanduser(self, host_cwd_and_loud_originals):
+        """Path.expanduser() expands to the virtual root, not the host home."""
+        vfs = VirtualFS({})
+
+        with patch(vfs):
+            assert str(Path("~/notes.txt").expanduser()) == "/notes.txt"
+            assert str(Path("~").expanduser()) == "/"
+
+    def test_accessor_realpath(self, host_cwd_and_loud_originals):
+        """Path.resolve() resolves against the virtual root, not the host CWD."""
+        vfs = VirtualFS({})
+        vfs.write("a", b"content")
+
+        with patch(vfs):
+            assert str(Path("a").resolve()) == "/a"
