@@ -145,7 +145,7 @@ fs.write("/chapters/x.md", b"no")  # PermissionError (read-only mount)
 
 **Nested mounts:** Supported. A mount at `/a/b` takes priority over `/a` for paths under `/a/b/`.
 
-**Optional methods are forwarded, not dropped.** `MountFS` implements every name in `monkeyfs.base.FORWARDED_METHODS`, routing each by prefix, so composing a filesystem does not narrow it. `resolve_path()` answers in the composed namespace; `readlink()` puts the mount prefix back on an absolute target; `get_metadata_snapshot()` merges each mount's paths under its prefix; `invalidate()` reaches every backend that keeps caches and skips those that do not.
+**Optional methods are forwarded, not dropped.** `MountFS` implements every name in `monkeyfs.base.FORWARDED_METHODS`, routing each by prefix, so composing a filesystem does not narrow it. `resolve_path()` answers in the composed namespace; `readlink()` puts the mount prefix back on a target the backend reports as absolute, which is why a backend must answer in its own namespace and never in the host's; `get_metadata_snapshot()` merges each mount's paths under its prefix and leaves out paths a mount shadows, so every path it reports is one an operation would route to the filesystem that reported it; `invalidate()` reaches every backend that keeps caches and skips those that do not.
 
 ## Protocol & types
 
