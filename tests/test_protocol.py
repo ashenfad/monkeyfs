@@ -264,3 +264,11 @@ class TestReadOnlyFSForwarding:
         # ``access`` is mode-sensitive, so the wrapper answers it itself;
         # every other read is the backend's own bound method.
         assert name in vars(ReadOnlyFS) or forwarded == getattr(vfs, name)
+
+    def test_key_scheme_helpers_are_reads(self):
+        vfs = VirtualFS({})
+        vfs.write("file.txt", b"hello")
+        ro = ReadOnlyFS(vfs)
+        key = ro.metadata_key("file.txt")
+        assert ro.is_metadata_key(key)
+        assert ro.path_for_metadata_key(key) == "file.txt"
