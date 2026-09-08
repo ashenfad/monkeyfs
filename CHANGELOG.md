@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **`VirtualFS` metadata is one row per path instead of one table.** Every file's `FileMetadata` now lives under `__vfs_meta_<encoded path>`, beside its blob at `__vfs_<encoded path>` and under the same encoding; directories created with `mkdir()` get a row of their own. The single `__vfs_metadata__` table was rewritten on every write, which made it the one key every writer contends on: under kvgit, any two branches that each wrote *any* file conflicted on it at merge time, defeating the key-level three-way merge both libraries were built for, and each write reserialized the whole table and put a fresh blob in the commit. The consumer-facing rule is that **a row is written whenever, and only when, its blob is written or its metadata changes** -- nothing else rewrites one -- so blobs and rows merge key by key with nothing to reconcile after the fact. Writes are O(1) again. The scheme is exposed as `VirtualFS.META_PREFIX` plus `metadata_key(path)`, `is_metadata_key(key)` and `path_for_metadata_key(key)`, so a store above can enumerate rows without reproducing the encoding; `_is_vfs_key()` now means "holds file content", excluding rows, the CWD slot and the legacy table, so scans that list files skip all three in one place.
+- **`MountFS` and `ReadOnlyFS` derive their surface from the protocol.** `monkeyfs.base` now holds the required, optional, direct-use and key-scheme method sets as frozensets; `ReadOnlyFS.READ_METHODS` / `WRITE_METHODS` are re-exports of the classification there rather than a second list, and `MountFS` implements everything in `FORWARDED_METHODS`. A new drift test parses `monkeyfs/patching/` and fails if a shim reaches for a name the protocol does not declare, or if the protocol declares one no shim reaches -- which is how `lexists` was found to be direct-use (`os.path.lexists()` routes through the `exists` shim) rather than dispatched.
+
+### Deprecated
+- **`VirtualFS.METADATA_KEY`.** The name still resolves to `"__vfs_metadata__"` and the key is still read, so a consumer's transition code can name it, but nothing writes the table except to drain it.
+
+### Fixed
+- **`MountFS` dropped five optional methods off a composed filesystem.** `get_metadata_snapshot()`, `invalidate()`, `resolve_path()`, `readlink()` and `utime()` had no implementation, so any filesystem gained those operations only until something was mounted on it -- and `hasattr()` probes, which is how the fd table finds `resolve_path`, silently took the fallback path. All five are routed now: `resolve_path()` answers in the composed namespace, `readlink()` puts the mount prefix back on an absolute target, `get_metadata_snapshot()` merges each mount's paths under its prefix, and `invalidate()` reaches every backend that keeps caches while skipping those (such as `IsolatedFS`) that keep none.
+
+### Migration
+- **A state written by 0.1.9 and earlier reads exactly as before.** The `__vfs_metadata__` table is consulted for any path that has no row, so `stat()`, `list_detailed()`, quota accounting and `get_metadata_snapshot()` answer unchanged from an unmigrated state. It is drained write by write: writing a path stores its row -- `created_at` carried over -- and removes its table entry, and the key is deleted once the last entry is gone. Nothing migrates on open, because a read must not write, so an old state that is only read is never rewritten. Where a path has both a row and a table entry, the row wins. Consumers that read the table directly can drop that code once their states have drained; enumerate rows with `is_metadata_key()` / `path_for_metadata_key()` instead of the prefix, since a row key starts with `PREFIX` too.
+
 ## [0.1.9] - 2026-09-07
 
 ### Security
