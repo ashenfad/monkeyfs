@@ -1,8 +1,9 @@
 """Read-only filesystem wrapper.
 
 Wraps any FileSystem and enforces read-only access with an *allowlist*: the
-operations known to be read-only are named here and forwarded, and everything
-else -- including attributes this module has never heard of -- is refused.
+operations classified as read-only in ``monkeyfs.base`` are forwarded, and
+everything else -- including attributes this module has never heard of -- is
+refused.
 """
 
 from __future__ import annotations
@@ -10,70 +11,24 @@ from __future__ import annotations
 import os
 from typing import Any, Callable
 
-# The operations ReadOnlyFS forwards to the wrapped filesystem.
-#
-# Derived from what the patching layer actually dispatches to the filesystem
-# object -- ``fs.<method>()`` call sites plus the names passed to
-# ``patching.core._require()`` and to ``getattr(fs, ...)`` -- cross-checked
-# against the ``FileSystem`` protocol in ``base.py`` and the optional methods
-# in ``docs/api.md``, and against the direct-use methods the in-tree backends
-# expose (``read``, ``glob``, ``list_detailed``, ...).
-#
-# ``chdir`` is here because it moves the filesystem's own working directory
-# and stores nothing; it is a required protocol method, so refusing it would
-# take out ``os.chdir()`` under every read-only mount. ``open`` and ``access``
-# are listed for completeness but are implemented below rather than forwarded,
-# because both are read-only only for some arguments.
-READ_METHODS = frozenset(
-    {
-        "access",
-        "chdir",
-        "exists",
-        "get_metadata_snapshot",
-        "getcwd",
-        "getsize",
-        "glob",
-        "invalidate",
-        "isdir",
-        "isfile",
-        "islink",
-        "lexists",
-        "list",
-        "list_detailed",
-        "open",
-        "read",
-        "readlink",
-        "realpath",
-        "resolve_path",
-        "samefile",
-        "stat",
-    }
-)
+from .base import READ_METHODS, WRITE_METHODS
 
-# The operations that change stored state. Naming them buys a specific error
-# message rather than the generic "not classified" one below -- the guarantee
-# itself comes from READ_METHODS, since anything absent from it is refused.
-WRITE_METHODS = frozenset(
-    {
-        "chmod",
-        "chown",
-        "link",
-        "makedirs",
-        "mkdir",
-        "mount",
-        "remove",
-        "remove_many",
-        "rename",
-        "replace",
-        "rmdir",
-        "symlink",
-        "truncate",
-        "unmount",
-        "utime",
-        "write",
-        "write_many",
-    }
-)
+# The read/write split lives in ``base.py``, beside the protocol it classifies,
+# and both sets are re-exported here under the names ``docs/api.md`` and
+# callers already use.
+#
+# It used to be a second list maintained here by hand, cross-checked against
+# the protocol by reading both. That is the arrangement that let ``utime``
+# reach a backend the wrapper had never classified. Now the patch layer's
+# dispatch surface, this allowlist and ``MountFS``'s forwarding all come from
+# the same frozensets, so a method added to the protocol reaches all three.
+#
+# ``chdir`` is a read: it moves the filesystem's own working directory and
+# stores nothing, and it is a required protocol method, so refusing it would
+# take out ``os.chdir()`` under every read-only mount. ``open`` and ``access``
+# are in the read set but are implemented below rather than forwarded, because
+# both are read-only only for some arguments.
+__all__ = ["READ_METHODS", "WRITE_METHODS", "ReadOnlyFS"]
 
 
 class ReadOnlyFS:
@@ -128,9 +83,9 @@ class ReadOnlyFS:
             f"{type(self._fs).__name__}. ReadOnlyFS enumerates the operations "
             f"it knows to be safe and refuses everything else, so a method "
             f"added to a backend cannot widen the wrapper's guarantee by "
-            f"accident. If {name} only observes the filesystem, add it to "
-            f"monkeyfs.readonly.READ_METHODS; if it changes stored state, add "
-            f"it to monkeyfs.readonly.WRITE_METHODS."
+            f"accident. If {name} only observes the filesystem, add it to one "
+            f"of the read sets in monkeyfs.base; if it changes stored state, "
+            f"add it to one of the write sets there."
         )
 
     @staticmethod
