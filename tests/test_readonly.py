@@ -494,7 +494,7 @@ class TestMutatingSurfaceIsRefused:
             f"{backend.__name__} has method(s) {sorted(unclassified)} that this "
             f"test does not classify. Decide whether each one reads or mutates, "
             f"then add it to READING_METHODS or MUTATING_METHODS here and to the "
-            f"matching set in monkeyfs/readonly.py."
+            f"matching set in monkeyfs/base.py."
         )
 
     @pytest.mark.parametrize("method", sorted(READING_METHODS))
@@ -672,7 +672,7 @@ class TestUnknownAttributesFailClosed:
         with pytest.raises(PermissionError) as excinfo:
             ro.frobnicate("file.txt")
         message = str(excinfo.value)
-        assert "monkeyfs.readonly" in message, (
+        assert "monkeyfs.base" in message, (
             f"error does not say where to classify the method: {message}"
         )
 
