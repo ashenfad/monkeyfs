@@ -56,6 +56,23 @@ vfs.list("/")                  # ["file.txt"]
 
 **Directory model:** Directories can be created explicitly with `mkdir()` or implicitly -- any file path like `a/b/file.txt` makes `a/` and `a/b/` visible to `isdir()`, `list()`, and `exists()`. The direct `vfs.write()` method auto-creates parent directories for convenience; patched `open()` does not (raises `FileNotFoundError` on missing parents, matching POSIX). `rmdir()` follows POSIX semantics -- fails on non-empty directories regardless of how they were created.
 
+**Metadata storage:** Each path's `FileMetadata` is one state key, beside the blob it describes. A file's bytes live under `__vfs_<encoded path>` and its metadata under `__vfs_meta_<encoded path>`, with the same encoding on both, so a row and its blob are siblings. Directories created with `mkdir()` get a row of their own (`is_dir=True`); implicit directories have none.
+
+The rule a versioned backing store depends on: **a row is written whenever, and only when, its blob is written or its metadata changes.** Two writers touching different files touch disjoint keys, so blobs and rows both merge key by key with nothing to reconcile afterwards. Nothing else rewrites a row.
+
+Ask the filesystem for the scheme rather than reproducing it:
+
+```python
+key = vfs.metadata_key("data.csv")        # "__vfs_meta_MRQXIYJ..."
+VirtualFS.is_metadata_key(key)            # True — a row, not a file
+VirtualFS.path_for_metadata_key(key)      # "data.csv"
+VirtualFS.META_PREFIX                     # "__vfs_meta_"
+```
+
+`metadata_key()` resolves relative paths against the CWD, exactly as the blob key does. `is_metadata_key()` and `path_for_metadata_key()` are classmethods, so a consumer enumerating a store's keys can use them without an instance.
+
+**Migration from the single table:** monkeyfs 0.1.9 and earlier kept every path's metadata in one JSON blob under `__vfs_metadata__` (still named as `VirtualFS.METADATA_KEY`, now deprecated). A state written by those versions reads exactly as before: the table is consulted for any path that has no row. It is drained write by write -- writing a path stores its row and drops its table entry, and the key is deleted once the last entry is gone. Nothing migrates on open, because a read must not write. `get_metadata_snapshot()` merges both sources, the row winning where a path has both.
+
 **Buffering:** Files opened for writing buffer all content in memory and persist to the backing state on `close()`. `flush()` is a no-op -- there is no incremental persistence. This matches how most in-memory filesystems work but differs from real filesystems where `flush()` pushes data to the OS. For the fd emulation layer (`os.open`/`os.write`), the same applies: content is flushed to VFS on `os.close()`.
 
 **Backing state ownership:** VirtualFS caches parsed metadata in memory for performance. The backing `MutableMapping` should be treated as owned by the VFS instance -- external mutations to the state while the VFS is active may not be reflected.
@@ -85,9 +102,11 @@ ro.read("data.csv")       # b"a,b,c"
 ro.write("x.txt", b"hi")  # PermissionError: Read-only filesystem
 ```
 
-**Allowed operations** (`monkeyfs.readonly.READ_METHODS`): `open` (read modes), `read`, `stat`, `exists`, `isfile`, `isdir`, `islink`, `lexists`, `list`, `list_detailed`, `glob`, `getsize`, `realpath`, `samefile`, `readlink`, `resolve_path`, `get_metadata_snapshot`, `invalidate`, `access`, `getcwd`, `chdir`.
+**Allowed operations** (`monkeyfs.readonly.READ_METHODS`): `open` (read modes), `read`, `stat`, `exists`, `isfile`, `isdir`, `islink`, `lexists`, `list`, `list_detailed`, `glob`, `getsize`, `realpath`, `samefile`, `readlink`, `resolve_path`, `get_metadata_snapshot`, `invalidate`, `access`, `getcwd`, `chdir`, `metadata_key`, `is_metadata_key`, `path_for_metadata_key`.
 
 **Refused operations** (`monkeyfs.readonly.WRITE_METHODS`): `open` (write/append/exclusive/update modes), `write`, `write_many`, `remove`, `remove_many`, `mkdir`, `makedirs`, `rename`, `rmdir`, `replace`, `symlink`, `link`, `chmod`, `chown`, `truncate`, `utime`, and `MountFS`'s `mount` / `unmount`.
+
+**Both lists are the protocol's, not the wrapper's.** They are re-exports of `READ_METHODS` and `WRITE_METHODS` in `monkeyfs.base`, assembled from the sets in [the protocol section](#filesystem-protocol) -- the same sets `MountFS` derives its forwarding from and the drift test checks the patch layer against. A method classified once therefore reaches all three; the arrangement where each kept its own list is what let `utime` through a read-only wrapper.
 
 **Everything else is refused too.** An attribute on neither list -- a method a backend added, a data attribute such as `IsolatedFS.root` -- raises `PermissionError` naming it and saying which set to add it to. This is what keeps a backend from widening the wrapper's guarantee: a denylist forwards any mutating method it does not name, so `IsolatedFS` gaining `utime()` silently made `os.utime()` writable through a read-only wrapper. The cost is the inverse failure -- a genuinely read-only method that nobody classified is refused -- which is the right direction for a wrapper whose entire purpose is a guarantee.
 
@@ -126,13 +145,17 @@ fs.write("/chapters/x.md", b"no")  # PermissionError (read-only mount)
 
 **Nested mounts:** Supported. A mount at `/a/b` takes priority over `/a` for paths under `/a/b/`.
 
+**Optional methods are forwarded, not dropped.** `MountFS` implements every name in `monkeyfs.base.FORWARDED_METHODS`, routing each by prefix, so composing a filesystem does not narrow it. `resolve_path()` answers in the composed namespace; `readlink()` puts the mount prefix back on an absolute target; `get_metadata_snapshot()` merges each mount's paths under its prefix; `invalidate()` reaches every backend that keeps caches and skips those that do not.
+
 ## Protocol & types
 
 ### `FileSystem` (Protocol)
 
 Structural typing -- any object with the right methods works, no inheritance required. The patching layer checks at call time and raises `NotImplementedError` for anything missing.
 
-**Required methods:**
+`monkeyfs.base` holds the whole surface as frozensets, and everything else is derived from them: `ReadOnlyFS`'s allowlist, what `MountFS` forwards, and the drift test in `tests/test_protocol.py`, which parses `monkeyfs/patching/` and fails if a shim reaches for a name the sets do not declare -- or if the sets declare a name no shim reaches. The tables below are those sets written out.
+
+**Required methods** (`REQUIRED_READ_METHODS`, `REQUIRED_WRITE_METHODS`) -- called unconditionally, so a backend without one cannot be patched. `isinstance(fs, FileSystem)` checks exactly these:
 
 ```python
 open(path, mode="r", **kwargs) -> Any
@@ -149,7 +172,7 @@ getcwd() -> str
 chdir(path) -> None
 ```
 
-**Optional methods** -- `NotImplementedError` raised if the corresponding stdlib function is called but the method is missing:
+**Optional methods** (`OPTIONAL_READ_METHODS`, `OPTIONAL_WRITE_METHODS`) -- probed rather than called, so a backend without them still patches; `NotImplementedError` is raised if the corresponding stdlib function is called but the method is missing:
 
 ```python
 rmdir(path) -> None             # os.rmdir
@@ -166,7 +189,24 @@ link(src, dst) -> None          # os.link
 chmod(path, mode) -> None       # os.chmod, os.lchmod
 chown(path, uid, gid) -> None   # os.chown
 truncate(path, length) -> None  # os.truncate
+read(path) -> bytes             # os.open, os.read (fd emulation)
+write(path, content, mode="w")  # os.close, flushing a virtual fd
+resolve_path(path) -> str       # os.open (fd table path resolution)
 ```
+
+**Direct-use methods** (`DIRECT_READ_METHODS`, `DIRECT_WRITE_METHODS`) -- no stdlib shim dispatches to these, but callers reach for them and both wrappers forward them:
+
+```python
+glob(pattern) -> list[str]
+list_detailed(path=".", recursive=False) -> list[FileInfo]
+lexists(path) -> bool                       # os.path.lexists routes to exists()
+get_metadata_snapshot() -> dict[str, FileMetadata]
+invalidate() -> None
+write_many(files) -> None
+remove_many(paths) -> None
+```
+
+**Key-scheme methods** (`KEY_SCHEME_METHODS`) -- `metadata_key`, `is_metadata_key`, `path_for_metadata_key` describe one backend's storage layout. They read nothing, so `ReadOnlyFS` forwards them; they compose with nothing, so `MountFS` does not.
 
 `utime()` keeps the `(path, times)` signature above even though `os.utime()` is reached almost entirely through `ns=` -- `shutil.copystat()`, and with it `copy2()` and `copytree()`, calls `os.utime(dst, ns=(atime_ns, mtime_ns))` and never passes `times`. The `ns` pair is converted to seconds at the patch boundary instead of being handed to the backend, so a backend written to the interface above needs no change. The conversion goes through a float, which resolves to roughly 240ns for a present-day timestamp; no in-tree backend stores finer than that in any case (`VirtualFS` keeps an ISO-8601 string, `IsolatedFS` forwards `times` to the host `os.utime()`).
 
