@@ -315,18 +315,31 @@ class MountFS:
         return self._normalize(prefix + target)
 
     def get_metadata_snapshot(self) -> dict[str, FileMetadata]:
-        """Metadata for every path in the composed namespace.
+        """Metadata for every path reachable in the composed namespace.
 
         Keys are root-relative, as the backends report them, with each
         mount's paths carried under its prefix so two mounts holding the
         same inner path stay distinct.
+
+        A path is reported by the filesystem an operation on it would
+        route to, and by no other. A mount shadows the base beneath it,
+        and a nested mount shadows the mount it sits in, so metadata a
+        shadowed filesystem still holds for such a path is left out: it
+        describes a file nothing here can open, stat or list, and a
+        consumer comparing snapshots would read it as a live file.
         """
-        snapshot: dict[str, FileMetadata] = dict(self._base.get_metadata_snapshot())
-        for prefix, fs in self._mounts.items():
-            base = prefix.strip("/")
+        snapshot: dict[str, FileMetadata] = {}
+        sources: list[tuple[str | None, Any]] = [(None, self._base)]
+        sources.extend(self._mounts.items())
+
+        for prefix, fs in sources:
+            base = "" if prefix is None else prefix.strip("/")
             for path, meta in fs.get_metadata_snapshot().items():
                 inner = path.strip("/")
-                snapshot[f"{base}/{inner}" if inner else base] = meta
+                composed = f"{base}/{inner}" if base and inner else (base or inner)
+                if not composed or self._owner_of("/" + composed) != prefix:
+                    continue
+                snapshot[composed] = meta
         return snapshot
 
     def invalidate(self) -> None:

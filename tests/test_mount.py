@@ -431,3 +431,69 @@ class TestMountedLinkTargets:
         fs = MountFS(base, {"/mnt": VirtualFS({})})
 
         assert fs.readlink("/link.txt") == "/target.txt"
+
+
+class TestComposedMetadataSnapshot:
+    """The snapshot reports what the namespace can reach, and nothing else."""
+
+    def test_a_mount_shadows_base_metadata_beneath_it(self):
+        """The regression: a shadowed base path stayed in the snapshot.
+
+        Every path operation on ``/data/ghost.txt`` routes to the mount,
+        which has no such file, so reporting the base's metadata for it
+        described a file nothing could open.
+        """
+        base = VirtualFS({})
+        base.write("app.py", b"x")
+        base.write("data/ghost.txt", b"unreachable")
+        mount = VirtualFS({})
+        mount.write("real.txt", b"hi")
+        fs = MountFS(base, {"/data": mount})
+
+        snapshot = fs.get_metadata_snapshot()
+
+        assert "data/ghost.txt" not in snapshot
+        assert not fs.exists("/data/ghost.txt")
+        assert snapshot["app.py"].size == 1
+        assert snapshot["data/real.txt"].size == 2
+
+    def test_the_shadowed_directory_row_goes_too(self):
+        """A base directory row at the mount point is shadowed like a file."""
+        base = VirtualFS({})
+        base.mkdir("data")
+        fs = MountFS(base, {"/data": VirtualFS({})})
+
+        assert "data" not in fs.get_metadata_snapshot()
+
+    def test_a_deeper_mount_shadows_a_shallower_one(self):
+        outer = VirtualFS({})
+        outer.write("keep.txt", b"k")
+        outer.write("inner/ghost.txt", b"unreachable")
+        inner = VirtualFS({})
+        inner.write("real.txt", b"hi")
+        fs = MountFS(VirtualFS({}), {"/a": outer, "/a/inner": inner})
+
+        snapshot = fs.get_metadata_snapshot()
+
+        assert "a/inner/ghost.txt" not in snapshot
+        assert snapshot["a/keep.txt"].size == 1
+        assert snapshot["a/inner/real.txt"].size == 2
+
+    def test_a_mount_root_entry_survives(self):
+        mount = VirtualFS({})
+        mount.mkdir("sub")
+        fs = MountFS(VirtualFS({}), {"/data": mount})
+
+        assert "data/sub" in fs.get_metadata_snapshot()
+
+    def test_every_reported_path_routes_to_the_filesystem_that_reported_it(self):
+        base = VirtualFS({})
+        base.write("app.py", b"x")
+        base.write("data/ghost.txt", b"unreachable")
+        mount = VirtualFS({})
+        mount.write("real.txt", b"hi")
+        fs = MountFS(base, {"/data": mount})
+
+        for path, meta in fs.get_metadata_snapshot().items():
+            assert fs.exists("/" + path), f"{path} is reported but unreachable"
+            assert fs.stat("/" + path).size == meta.size
