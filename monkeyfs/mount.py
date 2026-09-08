@@ -76,6 +76,21 @@ class MountFS:
             return self._normalize("/" + path)
         return self._normalize(self._cwd + "/" + path)
 
+    def _owner_of(self, abs_path: str) -> str | None:
+        """The mount prefix an absolute path routes to, or None for the base.
+
+        The longest matching prefix wins, so a mount shadows the base
+        beneath it and a nested mount shadows the mount it sits in. Every
+        question of the form "which filesystem answers for this path?" --
+        routing a call, translating a link target, deciding whether a
+        path is reachable at all -- is this one function, so the answers
+        cannot disagree.
+        """
+        for prefix in self._sorted_prefixes:
+            if abs_path == prefix or abs_path.startswith(prefix + "/"):
+                return prefix
+        return None
+
     def _resolve(self, path: str) -> tuple[Any, str]:
         """Route path to the appropriate filesystem.
 
@@ -85,10 +100,10 @@ class MountFS:
         """
         abs_path = self._to_absolute(path)
 
-        for prefix in self._sorted_prefixes:
-            if abs_path == prefix or abs_path.startswith(prefix + "/"):
-                inner = abs_path[len(prefix) :] or "/"
-                return self._mounts[prefix], inner
+        prefix = self._owner_of(abs_path)
+        if prefix is not None:
+            inner = abs_path[len(prefix) :] or "/"
+            return self._mounts[prefix], inner
 
         # Strip leading slash for base FS — VirtualFS uses paths like
         # "file.txt" not "/file.txt". But keep "/" as "/".
@@ -277,21 +292,27 @@ class MountFS:
         return fs1.samefile(inner1, inner2)
 
     def readlink(self, path: str) -> str:
-        """Read a symbolic link, translating an absolute target.
+        """Read a symbolic link, translating the target into this namespace.
 
-        A target the mount reports as absolute is absolute in *its*
-        namespace, so the mount prefix goes back on; a relative target
-        resolves against the link's own directory and reads the same on
-        either side of the boundary.
+        A backend reports a link target in its own namespace, never in
+        the host's: absolute means "from that filesystem's root", which
+        is its mount point here, so the prefix goes back on. A relative
+        target resolves against the link's own directory and names the
+        same file on either side of the boundary, so it passes through.
+
+        The prefix used is the one the *link* routed through, not the
+        first mount that happens to hold this backend, so mounting one
+        filesystem at two points still reads each link from where it was
+        asked for.
         """
+        abs_path = self._to_absolute(path)
         fs, inner = self._resolve(path)
         target = fs.readlink(inner)
-        if not target.startswith("/"):
+
+        prefix = self._owner_of(abs_path)
+        if prefix is None or not target.startswith("/"):
             return target
-        for prefix in self._sorted_prefixes:
-            if self._mounts[prefix] is fs:
-                return self._normalize(prefix + target)
-        return target
+        return self._normalize(prefix + target)
 
     def get_metadata_snapshot(self) -> dict[str, FileMetadata]:
         """Metadata for every path in the composed namespace.

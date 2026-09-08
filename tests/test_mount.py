@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from monkeyfs import VirtualFS, patch
+from monkeyfs import IsolatedFS, VirtualFS, patch
 from monkeyfs.mount import MountFS
 from monkeyfs.readonly import ReadOnlyFS
 
@@ -376,3 +376,58 @@ class TestMountFSGlob:
         matches = fs.glob("/chapters/*.md")
         assert "/chapters/summary.md" in matches
         assert "/chapters/ghost.md" not in matches
+
+
+class TestMountedLinkTargets:
+    """A link target read through a mount must name a path in the mount."""
+
+    def test_readlink_prefixes_a_mounted_absolute_target(self, tmp_path):
+        """The regression: an IsolatedFS mount reported a host path.
+
+        ``IsolatedFS.symlink()`` stores the host path on disk, so its
+        ``readlink()`` used to hand back ``/tmp/.../target.txt``; putting
+        the mount prefix on that produced ``/mnt/tmp/.../target.txt``,
+        a path nothing could open.
+        """
+        inner = IsolatedFS(str(tmp_path))
+        inner.write("target.txt", b"data")
+        inner.symlink("target.txt", "link.txt")
+        fs = MountFS(_make_base(), {"/mnt": inner})
+
+        assert fs.readlink("/mnt/link.txt") == "/mnt/target.txt"
+        assert fs.read(fs.readlink("/mnt/link.txt")) == b"data"
+
+    def test_readlink_prefixes_a_nested_mounted_target(self, tmp_path):
+        inner = IsolatedFS(str(tmp_path))
+        inner.write("d/target.txt", b"data")
+        inner.symlink("d/target.txt", "d/link.txt")
+        fs = MountFS(_make_base(), {"/a/b": inner})
+
+        assert fs.readlink("/a/b/d/link.txt") == "/a/b/d/target.txt"
+
+    def test_readlink_leaves_a_relative_target_alone(self, tmp_path):
+        """A relative target resolves against the link's own directory."""
+        inner = IsolatedFS(str(tmp_path))
+        inner.write("d/target.txt", b"data")
+        (tmp_path / "d" / "link.txt").symlink_to("target.txt")
+        fs = MountFS(_make_base(), {"/mnt": inner})
+
+        assert fs.readlink("/mnt/d/link.txt") == "target.txt"
+
+    def test_readlink_uses_the_prefix_the_link_routed_through(self, tmp_path):
+        """One filesystem mounted twice reads each link from where it was asked."""
+        inner = IsolatedFS(str(tmp_path))
+        inner.write("target.txt", b"data")
+        inner.symlink("target.txt", "link.txt")
+        fs = MountFS(_make_base(), {"/one": inner, "/two": inner})
+
+        assert fs.readlink("/one/link.txt") == "/one/target.txt"
+        assert fs.readlink("/two/link.txt") == "/two/target.txt"
+
+    def test_readlink_on_the_base_is_not_prefixed(self, tmp_path):
+        base = IsolatedFS(str(tmp_path))
+        base.write("target.txt", b"data")
+        base.symlink("target.txt", "link.txt")
+        fs = MountFS(base, {"/mnt": VirtualFS({})})
+
+        assert fs.readlink("/link.txt") == "/target.txt"

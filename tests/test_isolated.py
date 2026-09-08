@@ -639,6 +639,40 @@ class TestIsolatedOptionalMethods:
         target_str = fs.readlink("link.txt")
         assert "target.txt" in target_str
 
+    def test_readlink_answers_in_the_virtual_namespace(self, tmp_path):
+        """The host root must not leak out through a link target.
+
+        symlink() stores the host path the kernel needs; readlink() is
+        its inverse and reports the same target as the caller named it.
+        A host path here would name the sandbox's real location and
+        would not route through anything composing this filesystem.
+        """
+        fs = IsolatedFS(str(tmp_path))
+        fs.write("target.txt", b"target data")
+        fs.symlink("target.txt", "link.txt")
+
+        assert fs.readlink("link.txt") == "/target.txt"
+        assert str(tmp_path) not in fs.readlink("link.txt")
+
+    def test_readlink_target_round_trips_through_symlink(self, tmp_path):
+        """What readlink() returns, symlink() takes back."""
+        fs = IsolatedFS(str(tmp_path))
+        fs.write("dir/target.txt", b"data")
+        fs.symlink("dir/target.txt", "first.txt")
+
+        fs.symlink(fs.readlink("first.txt"), "second.txt")
+
+        assert fs.readlink("second.txt") == fs.readlink("first.txt")
+        assert fs.read("second.txt") == b"data"
+
+    def test_readlink_keeps_a_relative_target_relative(self, tmp_path):
+        """A relative target names the same file in either namespace."""
+        fs = IsolatedFS(str(tmp_path))
+        fs.write("dir/target.txt", b"data")
+        (tmp_path / "dir" / "link.txt").symlink_to("target.txt")
+
+        assert fs.readlink("dir/link.txt") == "target.txt"
+
     def test_readlink_blocks_escaping_relative_target(self, tmp_path):
         """Test readlink rejects relative symlinks that escape the sandbox."""
         fs = IsolatedFS(str(tmp_path))
