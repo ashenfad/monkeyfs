@@ -438,21 +438,41 @@ class IsolatedFS:
             return os.access(resolved, mode)
 
     def readlink(self, path: str) -> str:
-        """Read a symbolic link target."""
+        """Read a symbolic link target, in this filesystem's namespace.
+
+        Every path this filesystem hands back is virtual -- root-relative,
+        with the root reported as "/" -- and a link target is no
+        exception. An absolute target is stored on disk as a host path,
+        because that is what the kernel needs, but the host prefix is not
+        the caller's to see: code inside a patch() context would read the
+        sandbox's real location out of it, and a wrapper composing this
+        filesystem would be handed a path it cannot route. So an absolute
+        target is reported relative to the root, which is the form
+        symlink() accepts back -- the two are inverses.
+
+        A relative target resolves against the link's own directory, so
+        it names the same file whichever namespace reads it, and is
+        returned unchanged.
+        """
         with suspend():
             unresolved = self._validate_path_no_follow(path)
             target = os.readlink(unresolved)
             # Validate target stays within root
+            target_path = Path(target)
             try:
-                target_path = Path(target)
                 if target_path.is_absolute():
-                    target_path.relative_to(self.root)
+                    inside = target_path.relative_to(self.root)
                 else:
                     resolved_target = (unresolved.parent / target_path).resolve()
                     resolved_target.relative_to(self.root)
+                    inside = None
             except ValueError:
                 raise PermissionError(f"Symlink target escapes sandbox: '{path}'")
-            return target
+
+            if inside is None:
+                return target
+            relative = inside.as_posix()
+            return "/" if relative == "." else "/" + relative
 
     def symlink(self, src: str, dst: str) -> None:
         """Create a symbolic link."""
