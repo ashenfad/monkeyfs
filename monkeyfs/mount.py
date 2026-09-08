@@ -121,6 +121,15 @@ class MountFS:
     def _now_iso(self) -> str:
         return datetime.now(timezone.utc).isoformat()
 
+    def resolve_path(self, path: str) -> str:
+        """Resolve ``path`` against this MountFS's own working directory.
+
+        The answer is in the composed namespace, not any one backing
+        filesystem's -- routing happens after resolution, so a path that
+        crosses into a mount still names the same file.
+        """
+        return self._to_absolute(path)
+
     # -- CWD --
 
     def getcwd(self) -> str:
@@ -267,6 +276,49 @@ class MountFS:
             return False
         return fs1.samefile(inner1, inner2)
 
+    def readlink(self, path: str) -> str:
+        """Read a symbolic link, translating an absolute target.
+
+        A target the mount reports as absolute is absolute in *its*
+        namespace, so the mount prefix goes back on; a relative target
+        resolves against the link's own directory and reads the same on
+        either side of the boundary.
+        """
+        fs, inner = self._resolve(path)
+        target = fs.readlink(inner)
+        if not target.startswith("/"):
+            return target
+        for prefix in self._sorted_prefixes:
+            if self._mounts[prefix] is fs:
+                return self._normalize(prefix + target)
+        return target
+
+    def get_metadata_snapshot(self) -> dict[str, FileMetadata]:
+        """Metadata for every path in the composed namespace.
+
+        Keys are root-relative, as the backends report them, with each
+        mount's paths carried under its prefix so two mounts holding the
+        same inner path stay distinct.
+        """
+        snapshot: dict[str, FileMetadata] = dict(self._base.get_metadata_snapshot())
+        for prefix, fs in self._mounts.items():
+            base = prefix.strip("/")
+            for path, meta in fs.get_metadata_snapshot().items():
+                inner = path.strip("/")
+                snapshot[f"{base}/{inner}" if inner else base] = meta
+        return snapshot
+
+    def invalidate(self) -> None:
+        """Drop lazy caches in every backing filesystem that keeps any.
+
+        A backend without the method has no caches to drop, so it is
+        skipped rather than made to fail the whole call.
+        """
+        for fs in (self._base, *self._mounts.values()):
+            drop = getattr(fs, "invalidate", None)
+            if drop is not None:
+                drop()
+
     # -- Write operations --
 
     def write(self, path: str, content: bytes, mode: str = "w") -> None:
@@ -357,6 +409,10 @@ class MountFS:
     def truncate(self, path: str, length: int) -> None:
         fs, inner = self._resolve(path)
         fs.truncate(inner, length)
+
+    def utime(self, path: str, times: tuple[float, float] | None = None) -> None:
+        fs, inner = self._resolve(path)
+        fs.utime(inner, times)
 
     def glob(self, pattern: str) -> list[str]:
         abs_pattern = self._to_absolute(pattern)
