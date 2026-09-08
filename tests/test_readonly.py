@@ -414,7 +414,8 @@ MUTATING_METHODS = {
 
 # Every method of the FileSystem interface that only observes. ``chdir`` moves
 # the filesystem's own cwd and stores nothing, so it counts as a read here --
-# the same call it has always been allowed to make.
+# the same call it has always been allowed to make. The three key-scheme
+# helpers compute a state key from a path and touch neither.
 READING_METHODS = {
     "access",
     "chdir",
@@ -424,13 +425,16 @@ READING_METHODS = {
     "getsize",
     "glob",
     "invalidate",
+    "is_metadata_key",
     "isdir",
     "isfile",
     "islink",
     "lexists",
     "list",
     "list_detailed",
+    "metadata_key",
     "open",
+    "path_for_metadata_key",
     "read",
     "readlink",
     "realpath",

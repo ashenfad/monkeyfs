@@ -27,6 +27,22 @@ class VirtualFS:
     Files are stored as bytes. Text files are encoded as UTF-8.
     Directories are implicit (inferred from file paths, like S3).
 
+    Metadata is stored one row per path, beside the blob it describes:
+    a file at ``data.csv`` has its bytes under ``__vfs_<encoded>`` and its
+    ``FileMetadata`` under ``__vfs_meta_<encoded>``, with the same encoding
+    in both. Use ``metadata_key()``, ``is_metadata_key()`` and
+    ``path_for_metadata_key()`` to move between the two rather than
+    reproducing the encoding. Directories created with ``mkdir()`` get a
+    row of their own (``is_dir=True``); implicit directories have none.
+
+    Migration from the single table: monkeyfs 0.1.9 and earlier kept every
+    path's metadata in one JSON blob under ``__vfs_metadata__``. A state
+    written by those versions still reads correctly -- the table is
+    consulted for any path that has no row -- and is drained write by
+    write: writing a path stores its row and removes its table entry, and
+    the table key is deleted once the last entry is gone. Nothing migrates
+    on open, because a read must not write.
+
     Example:
         >>> state = {}  # any MutableMapping[str, bytes]
         >>> vfs = VirtualFS(state)
@@ -40,8 +56,17 @@ class VirtualFS:
     """
 
     PREFIX = "__vfs_"
-    METADATA_KEY = "__vfs_metadata__"
+    META_PREFIX = "__vfs_meta_"
     CWD_KEY = "__vfs_cwd__"
+
+    # Deprecated: the single metadata table written by 0.1.9 and earlier.
+    # Metadata now lives in one row per path under META_PREFIX. The name
+    # stays so consumers that still reach for the old key can name it
+    # while they migrate; nothing here writes it except to drain it.
+    # No blob or row key can collide with it: blob and row encodings are
+    # uppercase base32, and "__vfs_metadata__" does not start with
+    # META_PREFIX (the character after "__vfs_meta" is "d", not "_").
+    METADATA_KEY = "__vfs_metadata__"
 
     def __init__(
         self,
@@ -57,7 +82,14 @@ class VirtualFS:
         """
         self._state = state if state is not None else {}
         self._dir_cache: set[str] | None = None
-        self._metadata_cache: dict[str, FileMetadata] | None = None
+        # Rows read so far, keyed by canonical path. A None value is a
+        # cached miss: no row, and no legacy table entry either.
+        self._meta_cache: dict[str, FileMetadata | None] = {}
+        # Every path's metadata, built by one full scan of the state.
+        # None until something needs the whole set.
+        self._all_meta: dict[str, FileMetadata] | None = None
+        # The legacy __vfs_metadata__ table, parsed on demand.
+        self._legacy_table: dict[str, FileMetadata] | None = None
         self._max_size_bytes: int | None = (
             max_size_mb * 1024 * 1024 if max_size_mb is not None else None
         )
@@ -72,7 +104,9 @@ class VirtualFS:
         through it; it cannot see writes made around it.
         """
         self._dir_cache = None
-        self._metadata_cache = None
+        self._meta_cache = {}
+        self._all_meta = None
+        self._legacy_table = None
         self._current_size = None
 
     # -------------------------------------------------------------------------
@@ -118,11 +152,7 @@ class VirtualFS:
                 match_pattern = f"{cwd.lstrip('/')}/{pattern}"
 
         for key in self._state.keys():
-            if (
-                not self._is_vfs_key(key)
-                or key == self.METADATA_KEY
-                or key == self.CWD_KEY
-            ):
+            if not self._is_vfs_key(key):
                 continue
 
             path = self._decode_path(
@@ -167,7 +197,7 @@ class VirtualFS:
 
         self._dir_cache = {"", "."}  # Root directories
         for key in self._state.keys():
-            if key == self.METADATA_KEY or not self._is_vfs_key(key):
+            if not self._is_vfs_key(key):
                 continue
 
             try:
@@ -187,49 +217,229 @@ class VirtualFS:
         """Get current UTC timestamp as ISO 8601 string with milliseconds."""
         return datetime.now(timezone.utc).isoformat()
 
-    def _get_metadata(self) -> dict[str, FileMetadata]:
-        """Load metadata dict from state.
+    # -------------------------------------------------------------------------
+    # Metadata rows
+    #
+    # One row per path, keyed beside the blob it describes. The rule the
+    # layer above depends on: a row is written whenever, and only when, its
+    # blob is written or its metadata changes. Nothing else touches a row.
+    # That is what lets a key-level three-way merge of blobs and rows stay
+    # consistent -- two branches that write different files touch disjoint
+    # keys, so neither the blobs nor the rows conflict.
+    # -------------------------------------------------------------------------
 
-        Returns a cached dict on repeated calls. The cache is invalidated
-        by _set_metadata().
+    def metadata_key(self, path: str) -> str:
+        """State key holding the metadata row for ``path``.
 
-        Returns:
-            Dict mapping normalized paths to FileMetadata objects.
+        The row is the blob key with ``PREFIX`` swapped for
+        ``META_PREFIX``, so a row and its blob are siblings under one
+        encoding. ``path`` is resolved against the CWD, exactly as
+        ``_encode_path()`` resolves it.
         """
-        if self._metadata_cache is not None:
-            return self._metadata_cache
-        metadata_bytes = self._state.get(self.METADATA_KEY)
-        if metadata_bytes is None:
-            self._metadata_cache = {}
-        else:
-            raw = json.loads(metadata_bytes)
-            self._metadata_cache = {
-                path: FileMetadata(**fields) for path, fields in raw.items()
-            }
-        return self._metadata_cache
+        return self.META_PREFIX + self._encode_path(path)[len(self.PREFIX) :]
 
-    def _set_metadata(self, metadata: dict[str, FileMetadata]) -> None:
-        """Save metadata dict to state and update the cache.
+    @classmethod
+    def is_metadata_key(cls, key: str) -> bool:
+        """True if ``key`` holds a metadata row rather than file content."""
+        return key.startswith(cls.META_PREFIX)
 
-        Args:
-            metadata: Dict mapping normalized paths to FileMetadata objects.
+    @classmethod
+    def path_for_metadata_key(cls, key: str) -> str:
+        """The root-relative path whose metadata ``key`` holds.
+
+        Raises:
+            ValueError: If ``key`` is not a metadata row key.
         """
-        self._metadata_cache = metadata
-        raw = {
-            path: {
-                "size": m.size,
-                "created_at": m.created_at,
-                "modified_at": m.modified_at,
-                "is_dir": m.is_dir,
-            }
-            for path, m in metadata.items()
+        if not cls.is_metadata_key(key):
+            raise ValueError(f"Not a metadata row key: {key!r}")
+        return cls._decode_path(cls.PREFIX + key[len(cls.META_PREFIX) :])
+
+    def _canonical_path(self, path: str) -> str:
+        """Path in the one form blob keys and metadata rows agree on.
+
+        Resolved against the CWD and normalized. Blob keys encode the
+        resolved path, so rows must be keyed resolved too — otherwise one
+        file holds two rows depending on which form each caller passed.
+        """
+        return self._normalize_path(self.resolve_path(path))
+
+    def _row_key(self, canonical: str) -> str:
+        """Row key for an already-canonical path.
+
+        Canonical paths carry no leading slash, so the slash goes back on
+        before encoding — otherwise the CWD would be applied a second
+        time and the row would land under the wrong key.
+        """
+        return self.metadata_key("/" + canonical.lstrip("/"))
+
+    @staticmethod
+    def _row_fields(meta: FileMetadata) -> dict[str, object]:
+        """The JSON body of a metadata row."""
+        return {
+            "size": meta.size,
+            "created_at": meta.created_at,
+            "modified_at": meta.modified_at,
+            "is_dir": meta.is_dir,
         }
-        self._state[self.METADATA_KEY] = json.dumps(raw).encode()
+
+    def _legacy(self) -> dict[str, FileMetadata]:
+        """The legacy ``__vfs_metadata__`` table, parsed on demand.
+
+        Empty for any state written by this version once migration has
+        finished, and for every state that never held the table.
+        """
+        if self._legacy_table is not None:
+            return self._legacy_table
+
+        raw = self._state.get(self.METADATA_KEY)
+        table: dict[str, FileMetadata] = {}
+        if raw is not None:
+            try:
+                parsed = json.loads(raw)
+            except (TypeError, ValueError):
+                parsed = {}
+            if isinstance(parsed, dict):
+                for path, fields in parsed.items():
+                    if isinstance(fields, dict):
+                        try:
+                            table[path] = FileMetadata(**fields)
+                        except TypeError:
+                            continue
+        self._legacy_table = table
+        return table
+
+    def _legacy_forget(self, path: str) -> None:
+        """Drop one path from the legacy table; delete the key when empty.
+
+        Migration is write-driven: a read never rewrites state, so an old
+        table is drained one path at a time as writes land on those paths,
+        and the key disappears once the last entry has a row.
+        """
+        table = self._legacy()
+        if path not in table:
+            return
+
+        del table[path]
+        if self._all_meta is not None:
+            self._all_meta.pop(path, None)
+
+        if table:
+            self._state[self.METADATA_KEY] = json.dumps(
+                {p: self._row_fields(m) for p, m in table.items()}
+            ).encode()
+        elif self.METADATA_KEY in self._state:
+            del self._state[self.METADATA_KEY]
+
+    def _meta_at(self, canonical: str) -> FileMetadata | None:
+        """Metadata for an already-canonical path: its row, else the table."""
+        # Once the full set has been built it is authoritative — writes keep
+        # it in step — so answer from it rather than reading the row again.
+        if self._all_meta is not None:
+            return self._all_meta.get(canonical)
+        if canonical in self._meta_cache:
+            return self._meta_cache[canonical]
+
+        raw = self._state.get(self._row_key(canonical))
+        meta: FileMetadata | None = None
+        if raw is not None:
+            try:
+                fields = json.loads(raw)
+                meta = FileMetadata(**fields)
+            except (TypeError, ValueError):
+                meta = None
+        if meta is None:
+            meta = self._legacy().get(canonical)
+
+        self._meta_cache[canonical] = meta
+        return meta
+
+    def _meta_get(self, path: str) -> FileMetadata | None:
+        """Metadata for a caller-supplied path, tolerating legacy rows.
+
+        Prefers the canonical row; falls back to the raw normalized key
+        for table entries written before keys resolved (0.1.8 and
+        earlier), so old state keeps working instead of orphaning.
+        """
+        canonical = self._canonical_path(path)
+        meta = self._meta_at(canonical)
+        if meta is not None:
+            return meta
+        unresolved = self._normalize_path(path)
+        if unresolved != canonical:
+            return self._legacy().get(unresolved)
+        return None
+
+    def _meta_put(self, canonical: str, meta: FileMetadata) -> None:
+        """Write the metadata row for an already-canonical path."""
+        self._legacy_forget(canonical)
+        self._state[self._row_key(canonical)] = json.dumps(
+            self._row_fields(meta)
+        ).encode()
+        self._meta_cache[canonical] = meta
+        if self._all_meta is not None:
+            self._all_meta[canonical] = meta
+
+    def _meta_drop(self, canonical: str) -> None:
+        """Remove the metadata row for an already-canonical path."""
+        self._legacy_forget(canonical)
+        key = self._row_key(canonical)
+        if key in self._state:
+            del self._state[key]
+        self._meta_cache[canonical] = None
+        if self._all_meta is not None:
+            self._all_meta.pop(canonical, None)
+
+    def _meta_set(self, path: str, meta: FileMetadata) -> None:
+        """Write the metadata row for a caller-supplied path.
+
+        Drains the legacy table under both the canonical and the
+        unresolved key, so an old entry cannot survive as a second row
+        for the file that just moved to its own key.
+        """
+        canonical = self._canonical_path(path)
+        self._legacy_forget(self._normalize_path(path))
+        self._meta_put(canonical, meta)
+
+    def _meta_delete(self, path: str) -> None:
+        """Remove the metadata row for a caller-supplied path."""
+        canonical = self._canonical_path(path)
+        self._legacy_forget(self._normalize_path(path))
+        self._meta_drop(canonical)
+
+    def _meta_all(self) -> dict[str, FileMetadata]:
+        """Every path's metadata: the rows, plus the legacy table for the rest.
+
+        Scans the state, so callers that need one path should use
+        ``_meta_get()``. Cached until ``invalidate()``; writes made
+        through this instance keep the cache in step.
+        """
+        if self._all_meta is not None:
+            return self._all_meta
+
+        rows: dict[str, FileMetadata] = {}
+        for key in list(self._state.keys()):
+            if not self.is_metadata_key(key):
+                continue
+            raw = self._state.get(key)
+            if raw is None:
+                continue
+            try:
+                path = self.path_for_metadata_key(key)
+                rows[self._normalize_path(path)] = FileMetadata(**json.loads(raw))
+            except (TypeError, ValueError, UnicodeDecodeError):
+                # An undecodable key or an unreadable body is not a row.
+                continue
+
+        for path, meta in self._legacy().items():
+            rows.setdefault(path, meta)
+
+        self._all_meta = rows
+        return rows
 
     def _get_current_size(self) -> int:
         """Get total size of all files in the VFS.
 
-        Computes from metadata on first call, then cached.
+        Summed from the metadata rows on first call, then cached.
         Cache is invalidated on write/remove.
 
         Returns:
@@ -238,9 +448,8 @@ class VirtualFS:
         if self._current_size is not None:
             return self._current_size
 
-        metadata = self._get_metadata()
         self._current_size = sum(
-            m.size for m in metadata.values() if not getattr(m, "is_dir", False)
+            m.size for m in self._meta_all().values() if not m.is_dir
         )
         return self._current_size
 
@@ -260,8 +469,7 @@ class VirtualFS:
         current = self._get_current_size()
 
         # Account for overwriting existing file
-        metadata = self._get_metadata()
-        _, entry = self._metadata_row(metadata, path)
+        entry = self._meta_get(path)
         existing_size = entry.size if entry is not None else 0
 
         new_total = current - existing_size + new_content_size
@@ -272,83 +480,36 @@ class VirtualFS:
                 f"{self._max_size_bytes / 1024 / 1024:.1f}MB"
             )
 
-    def _metadata_key(self, path: str) -> str:
-        """Canonical metadata-table key: resolved against CWD, normalized.
-
-        Blob keys encode the resolved path and directory rows are
-        written resolved, so the table must be keyed resolved too —
-        otherwise one file holds two rows depending on which form
-        each caller passed.
-        """
-        return self._normalize_path(self.resolve_path(path))
-
-    def _metadata_row(
-        self, metadata: dict[str, FileMetadata], path: str
-    ) -> tuple[str, FileMetadata | None]:
-        """(key, entry) for a path, tolerating legacy rows.
-
-        Prefers the canonical resolved key; falls back to the raw
-        normalized key for rows written before keys resolved, so old
-        state keeps working instead of orphaning.
-        """
-        key = self._metadata_key(path)
-        if key in metadata:
-            return key, metadata[key]
-        legacy = self._normalize_path(path)
-        if legacy in metadata:
-            return legacy, metadata[legacy]
-        return key, None
-
     def _update_file_metadata(self, path: str, size: int, is_new: bool) -> None:
         """Update metadata for a file (create or modify).
 
         Args:
-            path: Normalized file path.
+            path: File path (relative or absolute).
             size: File size in bytes.
             is_new: True if this is a new file, False if modifying existing.
         """
-        metadata = self._get_metadata()
         now = self._now_iso()
-
-        # Canonical key: resolved against CWD, normalized — the same
-        # form blob keys and directory rows use, no matter which form
-        # the caller passed.
-        raw = path
-        path = self._metadata_key(path)
-        if not is_new and path not in metadata:
-            legacy = self._normalize_path(raw)
-            if legacy != path and legacy in metadata:
-                # Row written before keys resolved: the same file under
-                # a stale key. Update it in place rather than splitting
-                # the row; readers find either form.
-                path = legacy
-
-        if is_new or path not in metadata:
-            # New file - set both created_at and modified_at
-            metadata[path] = FileMetadata(
+        existing = None if is_new else self._meta_get(path)
+        self._meta_set(
+            path,
+            FileMetadata(
                 size=size,
-                created_at=now,
+                created_at=existing.created_at if existing is not None else now,
                 modified_at=now,
-            )
-        else:
-            # Existing file - preserve created_at, update modified_at and size
-            metadata[path] = FileMetadata(
-                size=size,
-                created_at=metadata[path].created_at,
-                modified_at=now,
-            )
-
-        self._set_metadata(metadata)
+            ),
+        )
 
     def get_metadata_snapshot(self) -> dict[str, FileMetadata]:
         """Get a copy of current file metadata for change detection.
 
-        Used to compare before/after agent turns to detect file changes.
+        Merges the per-path rows with any entries still left in a legacy
+        ``__vfs_metadata__`` table, so a half-migrated state reports every
+        path exactly once, the row winning where both hold one.
 
         Returns:
             Copy of metadata dict (safe to modify).
         """
-        return self._get_metadata().copy()
+        return dict(self._meta_all())
 
     def _normalize_path(self, path: str) -> str:
         """Normalize file path for consistent internal keys.
@@ -390,7 +551,8 @@ class VirtualFS:
         encoded = base64.b32encode(path.encode()).decode().rstrip("=")
         return f"{self.PREFIX}{encoded}"
 
-    def _decode_path(self, key: str) -> str:
+    @classmethod
+    def _decode_path(cls, key: str) -> str:
         """Convert state key back to file path.
 
         Args:
@@ -399,15 +561,25 @@ class VirtualFS:
         Returns:
             File path (e.g., "shared/data.csv").
         """
-        encoded = key[len(self.PREFIX) :]
+        encoded = key[len(cls.PREFIX) :]
         # Add padding back
         padding = (8 - len(encoded) % 8) % 8
         encoded += "=" * padding
         return base64.b32decode(encoded).decode()
 
-    def _is_vfs_key(self, key: str) -> bool:
-        """Check if a state key is a VFS file."""
-        return key.startswith(self.PREFIX)
+    @classmethod
+    def _is_vfs_key(cls, key: str) -> bool:
+        """Check if a state key holds file content.
+
+        A metadata row is not a file, and neither is the CWD slot or the
+        legacy metadata table, so every scan that enumerates files skips
+        all three here rather than each remembering the list.
+        """
+        return (
+            key.startswith(cls.PREFIX)
+            and not cls.is_metadata_key(key)
+            and key not in (cls.METADATA_KEY, cls.CWD_KEY)
+        )
 
     def open(
         self, path: str, mode: str = "r", **kwargs: object
@@ -560,11 +732,10 @@ class VirtualFS:
         # Check combined size limit before writing any files
         if self._max_size_bytes is not None:
             current = self._get_current_size()
-            metadata = self._get_metadata()
             new_total = current
 
             for path, content in files.items():
-                _, entry = self._metadata_row(metadata, path)
+                entry = self._meta_get(path)
                 existing_size = entry.size if entry is not None else 0
                 new_total = new_total - existing_size + len(content)
 
@@ -615,10 +786,6 @@ class VirtualFS:
 
         results: set[str] = set()
         for key in self._state.keys():
-            # Skip metadata and CWD keys
-            if key == self.METADATA_KEY or key == self.CWD_KEY:
-                continue
-
             if not self._is_vfs_key(key):
                 continue
 
@@ -645,9 +812,8 @@ class VirtualFS:
                 else:
                     results.add(remainder)  # File
 
-        # Include explicit directories from metadata
-        metadata = self._get_metadata()
-        for dir_path, meta in metadata.items():
+        # Include explicit directories from their metadata rows
+        for dir_path, meta in self._meta_all().items():
             if not meta.is_dir:
                 continue
             dir_path = dir_path.lstrip("/")
@@ -683,11 +849,12 @@ class VirtualFS:
         if key in self._state:
             return True
 
-        # Check for explicit directory entry in metadata
-        resolved = self.resolve_path(path)
-        normalized = self._normalize_path(resolved)
-        metadata = self._get_metadata()
-        if normalized in metadata and metadata[normalized].is_dir:
+        # Check for an explicit directory row. Existence probes land on
+        # paths that hold nothing, so this reads the whole set rather than
+        # caching a miss per path asked about.
+        normalized = self._canonical_path(path)
+        meta = self._meta_all().get(normalized)
+        if meta is not None and meta.is_dir:
             return True
 
         # Check for implicit directory match (backward compat)
@@ -720,17 +887,17 @@ class VirtualFS:
         Returns:
             True if path is a directory, False otherwise.
         """
-        # Resolve path against CWD first
-        path = self.resolve_path(path)
-        normalized = self._normalize_path(path)
+        normalized = self._canonical_path(path)
 
         # Root is always a directory
         if normalized in ("", "/"):
             return True
 
-        # Check for explicit directory entry in metadata
-        metadata = self._get_metadata()
-        if normalized in metadata and metadata[normalized].is_dir:
+        # Check for an explicit directory row. Like exists(), this is asked
+        # about paths that hold nothing, so it reads the whole set rather
+        # than caching a miss per path asked about.
+        meta = self._meta_all().get(normalized)
+        if meta is not None and meta.is_dir:
             return True
 
         # Fall back to implicit detection (for backward compatibility)
@@ -821,12 +988,9 @@ class VirtualFS:
             raise FileNotFoundError(path)
         del self._state[key]
 
-        # Remove from metadata (legacy fallback: a pre-resolution row
-        # must not survive its file)
-        metadata = self._get_metadata()
-        key, _ = self._metadata_row(metadata, path)
-        metadata.pop(key, None)
-        self._set_metadata(metadata)
+        # The row goes with the blob; a legacy table entry for the same
+        # path must not survive its file either.
+        self._meta_delete(path)
 
         # Invalidate caches
         self._dir_cache = None
@@ -848,12 +1012,9 @@ class VirtualFS:
                 raise FileNotFoundError(path)
             del self._state[key]
 
-        # Single metadata round-trip
-        metadata = self._get_metadata()
+        # One row removed per path, matching the blobs just deleted
         for path in paths:
-            key, _ = self._metadata_row(metadata, path)
-            metadata.pop(key, None)
-        self._set_metadata(metadata)
+            self._meta_delete(path)
 
         # Invalidate caches
         self._dir_cache = None
@@ -891,16 +1052,12 @@ class VirtualFS:
                 return
             raise FileExistsError(f"Directory exists: {path}")
 
-        # Create directory metadata entry
+        # Create the directory's own row (implicit directories have none)
         now = datetime.now(timezone.utc).isoformat()
-        metadata = self._get_metadata()
-        metadata[normalized] = FileMetadata(
-            size=0,
-            created_at=now,
-            modified_at=now,
-            is_dir=True,
+        self._meta_put(
+            normalized,
+            FileMetadata(size=0, created_at=now, modified_at=now, is_dir=True),
         )
-        self._set_metadata(metadata)
         self._dir_cache = None  # Invalidate cache
 
     def makedirs(self, path: str, exist_ok: bool = True) -> None:
@@ -952,10 +1109,8 @@ class VirtualFS:
         if children:
             raise OSError(f"Directory not empty: {path}")
 
-        # Remove directory metadata
-        metadata = self._get_metadata()
-        metadata.pop(normalized, None)
-        self._set_metadata(metadata)
+        # Remove the directory's row
+        self._meta_drop(normalized)
         self._dir_cache = None
 
     def rename(self, src: str, dst: str) -> None:
@@ -976,21 +1131,22 @@ class VirtualFS:
         if self.isfile(src):
             # File rename
             content = self.read(src)
-            metadata = self._get_metadata()
-            src_meta = metadata.get(src_norm)
+            src_meta = self._meta_at(src_norm)
 
             self.write(dst, content)
 
             # Preserve created_at from source
-            metadata = self._get_metadata()
-            if src_meta:
-                dst_meta = metadata[dst_norm]
-                metadata[dst_norm] = FileMetadata(
-                    size=dst_meta.size,
-                    created_at=src_meta.created_at,
-                    modified_at=dst_meta.modified_at,
-                )
-                self._set_metadata(metadata)
+            if src_meta is not None:
+                dst_meta = self._meta_at(dst_norm)
+                if dst_meta is not None:
+                    self._meta_put(
+                        dst_norm,
+                        FileMetadata(
+                            size=dst_meta.size,
+                            created_at=src_meta.created_at,
+                            modified_at=dst_meta.modified_at,
+                        ),
+                    )
 
             self.remove(src)
 
@@ -1003,13 +1159,10 @@ class VirtualFS:
             for key in list(self._state.keys()):
                 if not self._is_vfs_key(key):
                     continue
-                if key == self.METADATA_KEY or key == self.CWD_KEY:
-                    continue
                 file_path = self._decode_path(key).lstrip("/")
                 if file_path == src_norm or file_path.startswith(src_prefix):
                     files_to_move.append((key, file_path))
 
-            metadata = self._get_metadata()
             for key, file_path in files_to_move:
                 # Compute new path
                 rel = file_path[len(src_norm) :]
@@ -1019,19 +1172,18 @@ class VirtualFS:
                 # Move content
                 self._state[new_key] = self._state.pop(key)
 
-                # Move metadata
-                if file_path in metadata:
-                    metadata[new_path] = metadata.pop(file_path)
-
-            # Move directory metadata entries
-            dir_keys_to_move = [
-                k for k in metadata if k == src_norm or k.startswith(src_prefix)
+            # Every row under the tree follows its blob, directory rows
+            # included. Snapshotted first: writing rows mutates the map
+            # this is reading.
+            rows_to_move = [
+                (path, meta)
+                for path, meta in self._meta_all().items()
+                if path == src_norm or path.startswith(src_prefix)
             ]
-            for k in dir_keys_to_move:
-                rel = k[len(src_norm) :]
-                metadata[dst_norm + rel] = metadata.pop(k)
+            for path, meta in rows_to_move:
+                self._meta_drop(path)
+                self._meta_put(dst_norm + path[len(src_norm) :], meta)
 
-            self._set_metadata(metadata)
             self._dir_cache = None
         else:
             raise FileNotFoundError(src)
@@ -1091,8 +1243,7 @@ class VirtualFS:
         """
         # Check for file first
         if self.isfile(path):
-            metadata = self._get_metadata()
-            _, entry = self._metadata_row(metadata, path)
+            entry = self._meta_get(path)
             if entry is not None:
                 return entry
             now = datetime.now(timezone.utc).isoformat()
@@ -1102,8 +1253,7 @@ class VirtualFS:
 
         # Check for directory
         if self.isdir(path):
-            metadata = self._get_metadata()
-            _, entry = self._metadata_row(metadata, path)
+            entry = self._meta_get(path)
             if entry is not None:
                 return entry
             now = datetime.now(timezone.utc).isoformat()
@@ -1128,8 +1278,7 @@ class VirtualFS:
         if not self.exists(path):
             raise FileNotFoundError(path)
 
-        metadata = self._get_metadata()
-        key, old = self._metadata_row(metadata, path)
+        old = self._meta_get(path)
 
         if times is not None:
             mtime = datetime.fromtimestamp(times[1], tz=timezone.utc).isoformat()
@@ -1137,21 +1286,21 @@ class VirtualFS:
             mtime = self._now_iso()
 
         if old is not None:
-            metadata[key] = FileMetadata(
+            updated = FileMetadata(
                 size=old.size,
                 created_at=old.created_at,
                 modified_at=mtime,
                 is_dir=old.is_dir,
             )
         else:
-            metadata[key] = FileMetadata(
+            updated = FileMetadata(
                 size=0,
                 created_at=mtime,
                 modified_at=mtime,
                 is_dir=self.isdir(path),
             )
 
-        self._set_metadata(metadata)
+        self._meta_set(path, updated)
 
     def list_detailed(self, path: str = ".", recursive: bool = False) -> list[FileInfo]:
         """List directory contents with full file metadata.
@@ -1175,70 +1324,62 @@ class VirtualFS:
         names = self.list(path, recursive=recursive)
         user_prefix = path.rstrip("/")
 
-        # Normalize for internal lookups (metadata keys are stored without
-        # leading slash).
-        normalized_path = path.strip()
-        if normalized_path in (".", "./"):
-            normalized_path = ""
-        else:
-            normalized_path = normalized_path.strip("/")
-
-        # Load all metadata once
-        all_metadata = self._get_metadata()
+        # Children are named relative to the queried directory, so the
+        # directory is canonicalized once here and every lookup below is
+        # absolute — a relative name resolved against the CWD instead
+        # would miss the row whenever the two differ.
+        base = self._canonical_path(path)
+        if base == "/":
+            base = ""
 
         # Build FileInfo objects
         result = []
         for name in names:
-            # Internal key for metadata / isdir lookups
-            if not normalized_path:
-                internal_path = name
-            else:
-                internal_path = f"{normalized_path}/{name}"
+            internal_path = f"{base}/{name}" if base else name
+            absolute = "/" + internal_path
 
             # Display path preserves the user's queried prefix
             display = f"{user_prefix}/{name}" if user_prefix != "." else name
 
-            # Check if it's a directory
-            is_dir = self.isdir(internal_path)
+            meta = self._meta_at(internal_path)
 
-            if is_dir:
+            # Check if it's a directory
+            if self.isdir(absolute):
+                now = self._now_iso()
                 result.append(
                     FileInfo(
                         name=name,
                         path=display,
                         size=0,
-                        created_at=self._now_iso(),
-                        modified_at=self._now_iso(),
+                        created_at=meta.created_at if meta is not None else now,
+                        modified_at=meta.modified_at if meta is not None else now,
                         is_dir=True,
                     )
                 )
+            elif meta is not None:
+                result.append(
+                    FileInfo(
+                        name=name,
+                        path=display,
+                        size=meta.size,
+                        created_at=meta.created_at,
+                        modified_at=meta.modified_at,
+                        is_dir=False,
+                    )
+                )
             else:
-                # File - get metadata
-                meta = all_metadata.get(internal_path)
-                if meta:
-                    result.append(
-                        FileInfo(
-                            name=name,
-                            path=display,
-                            size=meta.size,
-                            created_at=meta.created_at,
-                            modified_at=meta.modified_at,
-                            is_dir=False,
-                        )
+                # File exists but has no row
+                content = self.read(absolute)
+                now = self._now_iso()
+                result.append(
+                    FileInfo(
+                        name=name,
+                        path=display,
+                        size=len(content),
+                        created_at=now,
+                        modified_at=now,
+                        is_dir=False,
                     )
-                else:
-                    # File exists but has no metadata
-                    content = self.read(internal_path)
-                    now = self._now_iso()
-                    result.append(
-                        FileInfo(
-                            name=name,
-                            path=display,
-                            size=len(content),
-                            created_at=now,
-                            modified_at=now,
-                            is_dir=False,
-                        )
-                    )
+                )
 
         return result
