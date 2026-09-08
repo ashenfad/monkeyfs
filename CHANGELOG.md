@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.10] - 2026-09-08
 
 ### Changed
 - **`VirtualFS` metadata is one row per path instead of one table.** Every file's `FileMetadata` now lives under `__vfs_meta_<encoded path>`, beside its blob at `__vfs_<encoded path>` and under the same encoding; directories created with `mkdir()` get a row of their own. The single `__vfs_metadata__` table was rewritten on every write, which made it the one key every writer contends on: under kvgit, any two branches that each wrote *any* file conflicted on it at merge time, defeating the key-level three-way merge both libraries were built for, and each write reserialized the whole table and put a fresh blob in the commit. The consumer-facing rule is that **a row is written whenever, and only when, its blob is written or its metadata changes** -- nothing else rewrites one -- so blobs and rows merge key by key with nothing to reconcile after the fact. Writes are O(1) again. The scheme is exposed as `VirtualFS.META_PREFIX` plus `metadata_key(path)`, `is_metadata_key(key)` and `path_for_metadata_key(key)`, so a store above can enumerate rows without reproducing the encoding; `_is_vfs_key()` now means "holds file content", excluding rows, the CWD slot and the legacy table, so scans that list files skip all three in one place.
