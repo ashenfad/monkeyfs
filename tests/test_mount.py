@@ -563,3 +563,17 @@ class TestNestedMountListing:
         fs = self._nested()
         paths = [e.path for e in fs.list_detailed("/", recursive=True)]
         assert "/workspace/data/out/o.txt" in paths
+
+    def test_an_implicit_parent_inside_a_mount_lists_like_one_in_the_base(self):
+        outer = VirtualFS()
+        deep = VirtualFS()
+        deep.write("leaf.txt", b"x")
+        fs = MountFS(VirtualFS(), {"/a": outer, "/a/missing/deep": deep})
+        assert fs.exists("/a/missing") and fs.isdir("/a/missing")
+        assert fs.list("/a/missing") == ["deep"]
+        assert fs.list("/a/missing", recursive=True) == ["deep", "deep/leaf.txt"]
+        assert fs.list("/a", recursive=True) == [
+            "missing",
+            "missing/deep",
+            "missing/deep/leaf.txt",
+        ]
