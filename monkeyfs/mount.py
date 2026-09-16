@@ -226,8 +226,10 @@ class MountFS:
 
         if is_exact_mount:
             result = set(fs.list("/", recursive=recursive))
-        elif self._is_mount_point(abs_path) and fs is self._base:
-            # Implicit parent of a mount but exists in base — try base
+        elif self._is_mount_point(abs_path):
+            # An implicit parent of a mount is a directory whether or not
+            # its owner (the base or an outer mount) holds one: what the
+            # owner has under it is listed, and nothing there is fine.
             try:
                 result = set(fs.list(inner, recursive=recursive))
             except (FileNotFoundError, NotADirectoryError):
