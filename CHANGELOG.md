@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.11] - 2026-09-16
 
 ### Fixed
 - **A recursive `MountFS` listing walks into every nested mount.** `list(recursive=True)` injected only the mount points that were direct children of the listed path, and asked each of those mounts to list itself, so a mount nested inside another mount (`/workspace/data` holding `/workspace/data/out`) never appeared below the point that contained it, and from the root a mount two levels down contributed nothing at all. The listing now walks every mount point under the path, adds the implicit parents that lead to it, and drops any entry a deeper mount shadows, so what it names is what a read at that path serves. Flat listings are unchanged.
