@@ -206,10 +206,20 @@ class MountFS:
         return fs.isdir(inner)
 
     def list(self, path: str = ".", recursive: bool = False) -> list[str]:
+        """List what a read at each path would serve.
+
+        The owning filesystem answers for the path itself; every mount
+        point below it is injected, with the implicit parents that lead
+        to it. A recursive listing walks every mount point under the
+        path, however deeply it nests, and drops any entry a deeper
+        mount shadows, so the listing and ``_owner_of`` agree about
+        which filesystem stands behind each name.
+        """
         abs_path = self._to_absolute(path)
 
         # If listing inside a mount, just delegate
         fs, inner = self._resolve(path)
+        owner = self._owner_of(abs_path)
 
         # Check if listing a mount point root
         is_exact_mount = abs_path in self._mounts
@@ -225,19 +235,24 @@ class MountFS:
         else:
             result = set(fs.list(inner, recursive=recursive))
 
-        # Inject mount-point children
-        mount_children = self._mount_children(abs_path)
-        for child in mount_children:
-            result.add(child)
-            if recursive:
-                # Find the full prefix for this child
-                norm = abs_path.rstrip("/") if abs_path != "/" else ""
-                child_prefix = f"{norm}/{child}" if norm else f"/{child}"
-                if child_prefix in self._mounts:
-                    mount_fs = self._mounts[child_prefix]
-                    for entry in mount_fs.list("/", recursive=True):
-                        result.add(f"{child}/{entry}")
+        norm = abs_path.rstrip("/") if abs_path != "/" else ""
+        if not recursive:
+            result.update(self._mount_children(abs_path))
+            return sorted(result)
 
+        # An entry the owner lists under a deeper mount point is shadowed
+        # by that mount: a read there never reaches the owner.
+        result = {name for name in result if self._owner_of(f"{norm}/{name}") == owner}
+        for prefix in self._mounts:
+            if not prefix.startswith(norm + "/"):
+                continue
+            rel = prefix[len(norm) + 1 :]
+            parts = rel.split("/")
+            for depth in range(1, len(parts) + 1):
+                result.add("/".join(parts[:depth]))
+            for entry in self._mounts[prefix].list("/", recursive=True):
+                if self._owner_of(f"{prefix}/{entry}") == prefix:
+                    result.add(f"{rel}/{entry}")
         return sorted(result)
 
     def list_detailed(self, path: str = ".", recursive: bool = False) -> list[FileInfo]:

@@ -497,3 +497,69 @@ class TestComposedMetadataSnapshot:
         for path, meta in fs.get_metadata_snapshot().items():
             assert fs.exists("/" + path), f"{path} is reported but unreachable"
             assert fs.stat("/" + path).size == meta.size
+
+
+class TestNestedMountListing:
+    """A recursive listing shows what a read at each path would serve,
+    however deeply the mounts nest."""
+
+    @staticmethod
+    def _nested():
+        base = VirtualFS()
+        base.write("base.txt", b"b")
+        base.write("workspace/data/shadowed.txt", b"gone")
+        data = VirtualFS()
+        data.write("d.txt", b"d")
+        data.write("out/inner-shadowed.txt", b"gone")
+        out = VirtualFS()
+        out.write("o.txt", b"o")
+        return MountFS(base, {"/workspace/data": data, "/workspace/data/out": out})
+
+    def test_root_walks_into_every_nested_mount(self):
+        fs = self._nested()
+        assert fs.list("/", recursive=True) == [
+            "base.txt",
+            "workspace",
+            "workspace/data",
+            "workspace/data/d.txt",
+            "workspace/data/out",
+            "workspace/data/out/o.txt",
+        ]
+
+    def test_an_implicit_parent_walks_into_the_mounts_below_it(self):
+        fs = self._nested()
+        assert fs.list("/workspace", recursive=True) == [
+            "data",
+            "data/d.txt",
+            "data/out",
+            "data/out/o.txt",
+        ]
+
+    def test_a_mount_walks_into_the_mount_nested_in_it(self):
+        fs = self._nested()
+        assert fs.list("/workspace/data", recursive=True) == [
+            "d.txt",
+            "out",
+            "out/o.txt",
+        ]
+
+    def test_a_deeper_mount_shadows_what_lies_beneath_it(self):
+        fs = self._nested()
+        listed = fs.list("/", recursive=True)
+        assert "workspace/data/shadowed.txt" not in listed
+        assert "workspace/data/out/inner-shadowed.txt" not in listed
+        # what the listing names is what a read serves
+        for name in listed:
+            if not fs.isdir("/" + name):
+                assert fs.read("/" + name)
+
+    def test_a_flat_listing_still_names_only_the_next_component(self):
+        fs = self._nested()
+        assert fs.list("/") == ["base.txt", "workspace"]
+        assert fs.list("/workspace") == ["data"]
+        assert fs.list("/workspace/data") == ["d.txt", "out"]
+
+    def test_list_detailed_covers_the_nested_mount(self):
+        fs = self._nested()
+        paths = [e.path for e in fs.list_detailed("/", recursive=True)]
+        assert "/workspace/data/out/o.txt" in paths
