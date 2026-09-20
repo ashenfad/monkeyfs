@@ -466,3 +466,47 @@ class TestImplicitDirectories:
         assert vfs.list("/") == ["pkg", "top.py"]
         assert vfs.list("pkg") == ["__init__.py", "sub", "utils.py"]
         assert vfs.list("pkg/sub") == ["mod.py"]
+
+
+# -- list_detailed().name is the entry's own name at every depth ---------------
+
+
+def _nested_tree(fs):
+    fs.makedirs("/probe/sub")
+    fs.write("/probe/one.txt", b"1")
+    fs.write("/probe/sub/two.txt", b"2")
+    return fs
+
+
+def _names_and_paths(fs):
+    return sorted((i.name, i.path) for i in fs.list_detailed("/probe", recursive=True))
+
+
+def test_virtualfs_recursive_listing_names_are_basenames():
+    from monkeyfs import VirtualFS
+
+    assert _names_and_paths(_nested_tree(VirtualFS({}))) == [
+        ("one.txt", "/probe/one.txt"),
+        ("sub", "/probe/sub"),
+        ("two.txt", "/probe/sub/two.txt"),
+    ]
+
+
+def test_mountfs_recursive_listing_names_are_basenames():
+    from monkeyfs import MountFS, VirtualFS
+
+    assert _names_and_paths(_nested_tree(MountFS(VirtualFS({})))) == [
+        ("one.txt", "/probe/one.txt"),
+        ("sub", "/probe/sub"),
+        ("two.txt", "/probe/sub/two.txt"),
+    ]
+
+
+def test_isolatedfs_recursive_listing_names_are_basenames(tmp_path):
+    from monkeyfs import IsolatedFS
+
+    assert _names_and_paths(_nested_tree(IsolatedFS(str(tmp_path)))) == [
+        ("one.txt", "/probe/one.txt"),
+        ("sub", "/probe/sub"),
+        ("two.txt", "/probe/sub/two.txt"),
+    ]
