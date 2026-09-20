@@ -83,7 +83,11 @@ class FileInfo:
 
     Attributes:
         name: File or directory name (basename).
-        path: Full path to file or directory.
+        path: The queried directory joined with the entry's path relative to
+            it, so list_detailed("/src", recursive=True) names
+            "/src/lib/util.py" and list_detailed("src", recursive=True) names
+            "src/lib/util.py". An absolute query therefore answers in this
+            filesystem's own absolute paths, never in a host's.
         size: File size in bytes (0 for directories).
         created_at: ISO 8601 timestamp when created (UTC).
         modified_at: ISO 8601 timestamp when last modified (UTC).
