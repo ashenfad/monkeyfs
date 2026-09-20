@@ -8,13 +8,14 @@ nothing else -- not a test harness, not the library on the other side of the
 protocol.
 
 What it checks, in order: the required methods exist; directories,
-``getcwd``/``chdir`` and relative resolution behave; a file written comes
-back through ``stat()``, ``list()`` and ``read()``; the ranged read means
-what it says, including the cases a backend that quietly ignores ``offset``
-and ``size`` would fail; ``open()`` round-trips bytes and text, through the
-backend's own if it has one and through the synthesized one under ``patch()``
-if it does not; and ``rename``/``remove`` leave the filesystem as they found
-it.
+``getcwd``/``chdir`` and relative resolution behave, ``exist_ok`` included;
+a file written comes back through ``stat()``, ``list()`` and ``read()``;
+``list_detailed()`` names each entry in the namespace it was asked in; the
+ranged read means what it says, including the cases a backend that quietly
+ignores ``offset`` and ``size`` would fail; ``open()`` round-trips bytes and
+text, through the backend's own if it has one and through the synthesized one
+under ``patch()`` if it does not; and ``rename``/``remove`` leave the
+filesystem as they found it.
 
 Usage::
 
@@ -76,6 +77,7 @@ def check_filesystem(fs: Any, scratch: str = SCRATCH) -> None:
         path = f"{scratch}/probe.bin"
         _write(fs, path, CONTENT)
         _check_file_metadata(fs, scratch, path)
+        _check_listing_paths(fs, scratch)
         _check_ranged_read(fs, path)
         _check_open(fs, scratch, path)
         _check_rename_and_remove(fs, scratch, path)
@@ -127,11 +129,110 @@ def _check_directories(fs: Any, scratch: str) -> None:
         f"{fs.list(scratch)!r} -- names, not paths",
     )
 
+    _check_exist_ok(fs, scratch, nested)
+
     missing = f"{scratch}/not-there"
     _require(
         not fs.exists(missing) and not fs.isfile(missing) and not fs.isdir(missing),
         f"exists(), isfile() and isdir() must all be False for {missing!r}",
     )
+
+
+def _check_exist_ok(fs: Any, scratch: str, nested: str) -> None:
+    """A directory that is already there is an error unless asked to be fine.
+
+    ``exist_ok`` is the only thing that makes creating an existing directory
+    succeed, and a caller reaches for False precisely to be told. A backend
+    that returns silently instead hands that caller the answer it asked to
+    be spared.
+    """
+    fs.makedirs(scratch)
+    _require(
+        fs.isdir(scratch),
+        f"makedirs({scratch!r}) on a directory that already exists must be "
+        f"silent -- exist_ok defaults to True -- and must leave it a directory",
+    )
+
+    cases = [
+        (
+            lambda: fs.makedirs(scratch, exist_ok=False),
+            f"makedirs({scratch!r}, exist_ok=False) on an existing directory "
+            f"must raise FileExistsError",
+        ),
+        (
+            lambda: fs.mkdir(nested),
+            f"mkdir({nested!r}) on an existing directory must raise "
+            f"FileExistsError -- exist_ok defaults to False",
+        ),
+        (
+            lambda: fs.mkdir(nested, parents=True, exist_ok=False),
+            f"mkdir({nested!r}, parents=True, exist_ok=False) on an existing "
+            f"directory must raise FileExistsError: parents says how to build "
+            f"the tree, not whether the end of it may already be there",
+        ),
+    ]
+    for call, message in cases:
+        try:
+            call()
+        except FileExistsError:
+            continue
+        except Exception as error:  # noqa: BLE001 - reported as the failure
+            raise AssertionError(
+                f"{message}, not {type(error).__name__} ({error})"
+            ) from error
+        raise AssertionError(f"{message}, rather than returning silently")
+
+    fs.mkdir(nested, exist_ok=True)
+    _require(
+        fs.isdir(nested),
+        f"mkdir({nested!r}, exist_ok=True) on an existing directory must be "
+        f"silent and must leave it a directory",
+    )
+
+
+def _check_listing_paths(fs: Any, scratch: str) -> None:
+    """``FileInfo.path``: the directory as queried, joined with the entry.
+
+    Listing ``"/src"`` names ``"/src/lib/util.py"`` and listing ``"src"``
+    names ``"src/lib/util.py"``, so a path that comes out of a listing goes
+    back in, and an absolute query never answers in anything but this
+    filesystem's own absolute paths.
+    """
+    if not _has(fs, "list_detailed"):
+        return
+
+    leaf = f"{scratch}/nested/leaf.bin"
+    _write(fs, leaf, b"leaf")
+    try:
+        absolute = {info.name: info.path for info in fs.list_detailed(scratch)}
+        _require(
+            absolute.get("probe.bin") == f"{scratch}/probe.bin",
+            f"list_detailed({scratch!r})[...].path must be the queried "
+            f"directory joined with the entry, {scratch + '/probe.bin'!r}, got "
+            f"{absolute.get('probe.bin')!r}",
+        )
+
+        deep = [info.path for info in fs.list_detailed(scratch, True)]
+        _require(
+            f"{scratch}/nested/leaf.bin" in deep,
+            f"a recursive list_detailed({scratch!r}) must name a nested entry "
+            f"{scratch + '/nested/leaf.bin'!r}, got {deep!r}",
+        )
+
+        start = fs.getcwd()
+        fs.chdir(scratch)
+        try:
+            relative = [info.path for info in fs.list_detailed("nested")]
+            _require(
+                relative == ["nested/leaf.bin"],
+                f"list_detailed('nested') must answer in the namespace it was "
+                f"asked in: a relative query gives paths relative to the same "
+                f"place, ['nested/leaf.bin'], got {relative!r}",
+            )
+        finally:
+            fs.chdir(start)
+    finally:
+        fs.remove(leaf)
 
 
 def _check_working_directory(fs: Any, scratch: str) -> None:

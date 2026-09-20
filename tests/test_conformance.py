@@ -105,6 +105,53 @@ class TestBackendsThatShouldFail:
         with pytest.raises(AssertionError, match="FileNotFoundError"):
             check_filesystem(ForgivingRemove({}))
 
+    def test_a_makedirs_that_forgives_an_existing_directory(self):
+        class ForgivingMakedirs(VirtualFS):
+            def makedirs(self, path, exist_ok=True):
+                super().makedirs(path, exist_ok=True)
+
+        with pytest.raises(AssertionError, match="exist_ok=False"):
+            check_filesystem(ForgivingMakedirs({}))
+
+    def test_a_mkdir_that_forgives_an_existing_directory(self):
+        class ForgivingMkdir(VirtualFS):
+            def mkdir(self, path, parents=False, exist_ok=False):
+                super().mkdir(path, parents=parents, exist_ok=True)
+
+        with pytest.raises(AssertionError, match="FileExistsError"):
+            check_filesystem(ForgivingMkdir({}))
+
+    def test_a_mkdir_that_forgives_when_building_parents(self):
+        class ForgivingParents(VirtualFS):
+            def mkdir(self, path, parents=False, exist_ok=False):
+                super().mkdir(path, parents=parents, exist_ok=exist_ok or parents)
+
+        with pytest.raises(AssertionError, match="parents"):
+            check_filesystem(ForgivingParents({}))
+
+    def test_a_listing_that_answers_in_another_namespace(self):
+        class RootRelative(VirtualFS):
+            def list_detailed(self, path=".", recursive=False):
+                entries = super().list_detailed(path, recursive)
+                for info in entries:
+                    info.path = info.path.lstrip("/")
+                return entries
+
+        with pytest.raises(AssertionError, match="list_detailed"):
+            check_filesystem(RootRelative({}))
+
+    def test_a_listing_that_answers_absolutely_whatever_it_was_asked(self):
+        class AlwaysAbsolute(VirtualFS):
+            def list_detailed(self, path=".", recursive=False):
+                entries = super().list_detailed(path, recursive)
+                for info in entries:
+                    if not info.path.startswith("/"):
+                        info.path = "/" + self.resolve_path(info.path).lstrip("/")
+                return entries
+
+        with pytest.raises(AssertionError, match="relative query"):
+            check_filesystem(AlwaysAbsolute({}))
+
     def test_a_filesystem_that_is_not_empty(self):
         fs = VirtualFS({})
         fs.makedirs(SCRATCH)
