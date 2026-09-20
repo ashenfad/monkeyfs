@@ -456,9 +456,22 @@ def _read_or_none(fs: Any, path: str) -> bytes | None:
 
 
 def _parent_dir(fs: Any, path: str) -> str:
-    """The absolute parent directory of ``path``, or ``""`` at the root."""
+    """The absolute parent directory of ``path``, or ``""`` at the root.
+
+    A relative path is resolved against the filesystem's own working
+    directory before its parent is taken. ``resolve_path`` is preferred
+    where the backend has one; without it, ``getcwd`` is joined on, since
+    it is required of every backend and a relative path means "from here"
+    -- taking the parent of the bare path would check ``/sub`` for a
+    caller in ``/work`` asking about ``sub/file``.
+    """
     resolve = getattr(fs, "resolve_path", None)
-    resolved = resolve(path) if resolve is not None else path
+    if resolve is not None:
+        resolved = resolve(path)
+    elif path.startswith("/"):
+        resolved = path
+    else:
+        resolved = posixpath.join(fs.getcwd(), path)
     parent = posixpath.dirname(posixpath.normpath(resolved).lstrip("/"))
     return "/" + parent if parent else ""
 
