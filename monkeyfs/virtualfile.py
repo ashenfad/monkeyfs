@@ -1,14 +1,238 @@
-"""Virtual file implementation for buffered writes to state."""
+"""File objects over a filesystem's bytes-level methods.
+
+Two of them, because a read and a write want opposite things from a
+filesystem that speaks in whole blobs:
+
+``LazyBinaryFile`` answers a binary read out of ``read(path, offset, size)``
+through a small block cache, so a reader that seeks costs the bytes it seeks
+to and nothing else.
+
+``VirtualFile`` buffers everything else -- text reads, and every write,
+append and update mode -- in memory and writes the whole file back on close,
+which is what the protocol's whole-file ``write()`` can express.
+"""
 
 from __future__ import annotations
 
 import io
+import os
 import warnings
+from collections import OrderedDict
 from collections.abc import Iterable, MutableMapping
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .virtual import VirtualFS
+
+#: Bytes fetched per backend call when a read is smaller than this.
+#:
+#: Sized against the two things that actually read a virtual file. A reader
+#: probing a file's shape asks for tens of bytes at a time -- a magic number,
+#: a header, a line -- and a block this size turns a scan of them into one
+#: backend call instead of hundreds. A parquet footer probe is 64 KiB exactly,
+#: so it costs one call and no more bytes than it asked for. Larger would move
+#: bytes nobody asked for on every small read; smaller would multiply calls on
+#: a backend where a call is an HTTP request.
+BLOCK_SIZE = 64 * 1024
+
+#: Blocks kept at once, so the cache cannot grow into a copy of the file.
+#: A cache exists here to keep neighbouring small reads from becoming one
+#: backend call each, which a handful of blocks does; holding more would be
+#: materializing the file again by a slower route.
+MAX_CACHED_BLOCKS = 4
+
+
+class LazyBinaryFile(io.RawIOBase):
+    """A seekable binary read stream over a filesystem's ranged ``read()``.
+
+    Opening ``"rb"`` used to hand back an ``io.BytesIO`` over the whole file,
+    which made "seekable" a fiction over a buffer someone had already paid
+    for: pyarrow reading two parquet columns of twenty seeks to the footer
+    and to two column chunks, touching 8% of the file, and every byte of the
+    other 92% had already crossed from the backend before it asked. This
+    object forwards those seeks instead -- ``read(path, offset, size)`` per
+    range -- so the reader's access pattern is what the backend is asked for.
+
+    Reads are served by blocks of ``BLOCK_SIZE``, at most ``MAX_CACHED_BLOCKS``
+    of them held at a time, with the block at the end of the file short. A read
+    of at least one block's worth skips the cache and issues a single ranged
+    read of exactly the range asked for: a reader that wants a megabyte should
+    cost one backend call rather than sixteen, and a megabyte held to serve one
+    read is not a cache.
+
+    The length of the file comes from ``stat()``, never from reading it, so
+    ``seek(-65536, os.SEEK_END)`` costs nothing. ``fileno()`` raises
+    ``io.UnsupportedOperation``: there is no file descriptor behind this, and
+    readers that ask are prepared for that answer.
+
+    The file is read as it is now, not as it was at open: a block that has
+    not been fetched yet comes from the backend when it is reached. Nothing
+    in the protocol lets a backend hold a snapshot, so a file rewritten
+    underneath an open reader is seen half-and-half, the way it would be
+    through a real file descriptor.
+    """
+
+    def __init__(self, fs: Any, path: str, block_size: int = BLOCK_SIZE):
+        """Open ``path`` on ``fs`` for lazy binary reading.
+
+        Args:
+            fs: Filesystem exposing ``read(path, offset, size)`` and ``stat``.
+            path: Path to read, as the filesystem understands it.
+            block_size: Bytes per cached block.
+
+        Raises:
+            FileNotFoundError: If the path has no file, via ``stat()``.
+        """
+        super().__init__()
+        self._fs = fs
+        self._path = path
+        self._block_size = block_size
+        self._size = fs.stat(path).size
+        self._pos = 0
+        self._blocks: OrderedDict[int, bytes] = OrderedDict()
+
+    # -- stream capabilities --
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def writable(self) -> bool:
+        return False
+
+    def write(self, b: Any) -> int:  # type: ignore[override]
+        """Refuse writes; this is a read stream over a backend's bytes."""
+        raise io.UnsupportedOperation("write")
+
+    # -- position --
+
+    def seek(self, offset: int, whence: int = os.SEEK_SET) -> int:
+        """Move the read position, including relative to the end of the file.
+
+        Seeking past the end is allowed, as on a real file; the read that
+        follows returns ``b""``.
+        """
+        self._ensure_open()
+        if whence == os.SEEK_SET:
+            position = offset
+        elif whence == os.SEEK_CUR:
+            position = self._pos + offset
+        elif whence == os.SEEK_END:
+            position = self._size + offset
+        else:
+            raise ValueError(f"invalid whence: {whence}")
+        if position < 0:
+            raise ValueError(f"negative seek value {position}")
+        self._pos = position
+        return position
+
+    def tell(self) -> int:
+        self._ensure_open()
+        return self._pos
+
+    # -- reading --
+
+    def read(self, size: int | None = -1) -> bytes:  # type: ignore[override]
+        """Read up to ``size`` bytes; a negative or absent size reads to EOF."""
+        self._ensure_open()
+        if size is None or size < 0:
+            return self._read_n(self._remaining())
+        return self._read_n(size)
+
+    def readall(self) -> bytes:
+        """Read from the current position to the end of the file.
+
+        Overridden because ``RawIOBase.readall()`` would otherwise loop over
+        8 KiB ``read()`` calls, which is one backend call per 8 KiB for a file
+        this object exists to fetch in as few calls as possible.
+        """
+        self._ensure_open()
+        return self._read_n(self._remaining())
+
+    def readinto(self, buffer: Any) -> int:  # type: ignore[override]
+        """Fill ``buffer`` with as many bytes as remain, returning the count."""
+        self._ensure_open()
+        data = self._read_n(len(buffer))
+        buffer[: len(data)] = data
+        return len(data)
+
+    def readline(self, size: int | None = -1) -> bytes:  # type: ignore[override]
+        """Read one line, scanning blocks rather than byte by byte.
+
+        ``IOBase.readline()`` would find the newline with single-byte reads.
+        Each of those is a dictionary lookup here rather than a backend call,
+        but a line is still found by scanning the block that holds it, which
+        is where a line that straddles a block boundary is stitched together.
+        """
+        self._ensure_open()
+        limit = -1 if size is None or size < 0 else size
+        line = bytearray()
+        while (limit < 0 or len(line) < limit) and self._remaining() > 0:
+            chunk = self._block_at(self._pos)
+            if not chunk:
+                break
+            newline = chunk.find(b"\n")
+            if newline >= 0:
+                chunk = chunk[: newline + 1]
+            if limit >= 0:
+                chunk = chunk[: limit - len(line)]
+            line += chunk
+            self._pos += len(chunk)
+            if chunk.endswith(b"\n"):
+                break
+        return bytes(line)
+
+    def close(self) -> None:
+        """Close the stream and drop the cached blocks."""
+        if not self.closed:
+            self._blocks.clear()
+        super().close()
+
+    # -- internals --
+
+    def _ensure_open(self) -> None:
+        if self.closed:
+            raise ValueError(f"I/O operation on closed file: {self._path}")
+
+    def _remaining(self) -> int:
+        return max(self._size - self._pos, 0)
+
+    def _read_n(self, count: int) -> bytes:
+        """Read ``count`` bytes from the current position, truncating at EOF."""
+        count = min(count, self._remaining())
+        if count <= 0:
+            return b""
+        if count >= self._block_size:
+            # One ranged read for exactly what was asked for, uncached.
+            data = self._fs.read(self._path, self._pos, count)
+            self._pos += len(data)
+            return data
+
+        out = bytearray()
+        while count > 0:
+            chunk = self._block_at(self._pos)[:count]
+            if not chunk:
+                break  # the file is shorter than stat() said; stop at what is
+            out += chunk
+            self._pos += len(chunk)
+            count -= len(chunk)
+        return bytes(out)
+
+    def _block_at(self, position: int) -> bytes:
+        """The cached block holding ``position``, from that position onward."""
+        index = position // self._block_size
+        block = self._blocks.get(index)
+        if block is None:
+            start = index * self._block_size
+            block = self._fs.read(self._path, start, self._block_size)
+            self._blocks[index] = block
+            while len(self._blocks) > MAX_CACHED_BLOCKS:
+                self._blocks.popitem(last=False)
+        else:
+            self._blocks.move_to_end(index)
+        return block[position - index * self._block_size :]
 
 
 class VirtualFile:
@@ -16,6 +240,15 @@ class VirtualFile:
 
     Buffers content during write operations, then persists mutations to state
     when the file is closed (either explicitly or via context manager).
+
+    This one materializes and stays that way, for two reasons that do not
+    apply to a binary read. A write is whole-file by the protocol's own
+    design -- ``write(path, content)`` replaces a file and there is no ranged
+    write to buffer toward -- so a write mode has to hold the content it will
+    send anyway. And a text read would have to decode across block
+    boundaries, where a multi-byte character can be split in half: the
+    bookkeeping to stitch one back together buys nothing a caller reading
+    text was going to skip past.
 
     Attributes:
         path: The virtual filesystem path.

@@ -12,7 +12,7 @@ from collections.abc import MutableMapping
 from datetime import datetime, timezone
 
 from .base import FileInfo, FileMetadata
-from .virtualfile import VirtualFile
+from .virtualfile import LazyBinaryFile, VirtualFile
 
 
 class VirtualFS:
@@ -583,7 +583,7 @@ class VirtualFS:
 
     def open(
         self, path: str, mode: str = "r", **kwargs: object
-    ) -> VirtualFile | io.BytesIO | io.StringIO:
+    ) -> VirtualFile | LazyBinaryFile | io.StringIO:
         """Open a file, returning a file-like object.
 
         Args:
@@ -592,7 +592,9 @@ class VirtualFS:
             **kwargs: Additional arguments (ignored for compatibility).
 
         Returns:
-            File-like object for reading or writing.
+            File-like object for reading or writing. A binary read is a
+            ``LazyBinaryFile``, which fetches the ranges it is asked for; a
+            text read and every write mode buffer the whole file.
 
         Raises:
             FileNotFoundError: If reading a file that doesn't exist.
@@ -608,14 +610,17 @@ class VirtualFS:
             and "x" not in mode
         ):
             # Read mode
+            if "b" in mode:
+                # Nothing is fetched here: the reader's first seek and read
+                # decide which bytes cross from the state at all.
+                if key not in self._state:
+                    raise FileNotFoundError(path)
+                return LazyBinaryFile(self, path)
+
             content = self._state.get(key)
             if content is None:
                 raise FileNotFoundError(path)
-
-            if "b" in mode:
-                return io.BytesIO(content)
-            else:
-                return io.StringIO(content.decode("utf-8"))
+            return io.StringIO(content.decode("utf-8"))
 
         elif "w" in mode or "a" in mode or "x" in mode or ("r" in mode and "+" in mode):
             # Write, append, or exclusive creation mode
