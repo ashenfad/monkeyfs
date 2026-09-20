@@ -294,6 +294,25 @@ class TestSynthesizedOpen:
 
             assert os.path.exists("/somewhere/file.txt")
 
+    def test_a_relative_parent_is_checked_from_the_cwd(self, termish):
+        # A backend without resolve_path still has getcwd, and a relative
+        # path means "from here": with the cwd at /work, `sub/file.txt`
+        # must be judged by /work/sub, not by /sub.
+        with patch(termish):
+            os.makedirs("/work/sub")
+            os.makedirs("/other")
+            os.chdir("/work")
+
+            with open("sub/file.txt", "w") as handle:
+                handle.write("here")
+            assert os.path.exists("/work/sub/file.txt")
+            assert not os.path.exists("/sub/file.txt")
+
+            # The mirror case: a parent that exists only at the root must
+            # not make a missing one under the cwd look present.
+            with pytest.raises(FileNotFoundError):
+                open("other/file.txt", "w")
+
     def test_the_rest_of_the_stdlib_still_routes(self, termish):
         with patch(termish):
             os.makedirs("/work/sub")
