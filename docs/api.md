@@ -2,7 +2,7 @@
 
 - [Context managers](#context-managers) -- `patch`, `suspend`
 - [Filesystem implementations](#filesystem-implementations) -- `VirtualFS`, `IsolatedFS`, `ReadOnlyFS`, `MountFS`
-- [Protocol & types](#protocol--types) -- `FileSystem`, `FileMetadata`, `FileInfo`
+- [Protocol & types](#protocol--types) -- `FileSystem`, `check_filesystem`, `FileMetadata`, `FileInfo`
 - [Low-level](#low-level) -- `current_fs`
 - [Patched functions](#patched-functions)
 - [Known limitations](#known-limitations)
@@ -73,7 +73,13 @@ VirtualFS.META_PREFIX                     # "__vfs_meta_"
 
 **Migration from the single table:** monkeyfs 0.1.9 and earlier kept every path's metadata in one JSON blob under `__vfs_metadata__` (still named as `VirtualFS.METADATA_KEY`, now deprecated). A state written by those versions reads exactly as before: the table is consulted for any path that has no row. It is drained write by write -- writing a path stores its row and drops its table entry, and the key is deleted once the last entry is gone. Nothing migrates on open, because a read must not write. `get_metadata_snapshot()` merges both sources, the row winning where a path has both.
 
-**Buffering:** Files opened for writing buffer all content in memory and persist to the backing state on `close()`. `flush()` is a no-op -- there is no incremental persistence. This matches how most in-memory filesystems work but differs from real filesystems where `flush()` pushes data to the OS. For the fd emulation layer (`os.open`/`os.write`), the same applies: content is flushed to VFS on `os.close()`.
+**Buffering:** Files opened for writing buffer all content in memory and persist to the backing state on `close()`. `flush()` is a no-op -- there is no incremental persistence. This matches how most in-memory filesystems work but differs from real filesystems where `flush()` pushes data to the OS. For the fd emulation layer (`os.open`/`os.write`), the same applies: content is flushed to VFS on `os.close()`, and a virtual fd loads the whole file into its buffer when it is opened -- one buffer serves its reads, its writes and that flush, so a virtual fd is not ranged the way `open(path, "rb")` is.
+
+**A binary read is lazy.** `open(path, "rb")` returns a `LazyBinaryFile`: a seekable, readable stream that fetches through `read(path, offset, size)` as the reader asks, rather than an `io.BytesIO` over the whole file. The length comes from `stat()`, so `seek(-65536, os.SEEK_END)` reads nothing; blocks are 64 KiB, at most four held at once, and the block at the end of the file is short. A read of at least one block's worth skips the cache and issues a single ranged read of exactly the range asked for, so a reader that wants a megabyte costs one backend call rather than sixteen. `fileno()` raises `io.UnsupportedOperation` -- there is no descriptor behind it -- which readers that probe for one accept.
+
+What this buys: pyarrow reading two parquet columns of twenty seeks to the footer and to two column chunks and touches 8% of the file, and `pd.read_parquet(path, columns=[...])` hands it a monkeyfs file object. On a backend that can range natively (an HTTP endpoint, a remote store), only those bytes move. On `VirtualFS` the blob still crosses from a `MutableMapping` whole, so the saving there is in what is held and copied, not in what is fetched.
+
+Because nothing is snapshotted at open, a file rewritten underneath an open reader is seen half-and-half, the way it would be through a real file descriptor. Text reads (`"r"`) and every write, append and update mode still materialize: a write is whole-file by the protocol's own design, and a text read would have to stitch a multi-byte character back together across a block boundary for nothing.
 
 **Backing state ownership:** VirtualFS caches parsed metadata in memory for performance. The backing `MutableMapping` should be treated as owned by the VFS instance -- external mutations to the state while the VFS is active may not be reflected.
 
@@ -158,7 +164,6 @@ Structural typing -- any object with the right methods works, no inheritance req
 **Required methods** (`REQUIRED_READ_METHODS`, `REQUIRED_WRITE_METHODS`) -- called unconditionally, so a backend without one cannot be patched. `isinstance(fs, FileSystem)` checks exactly these:
 
 ```python
-open(path, mode="r", **kwargs) -> Any
 stat(path) -> FileMetadata
 exists(path) -> bool
 isfile(path) -> bool
@@ -192,7 +197,24 @@ truncate(path, length) -> None  # os.truncate
 read(path, offset=0, size=-1) -> bytes  # os.open, os.read (fd emulation)
 write(path, content, mode="w")  # os.close, flushing a virtual fd
 resolve_path(path) -> str       # os.open (fd table path resolution)
+open(path, mode="r", **kwargs)  # open(); synthesized when absent
 ```
+
+**`read()` is ranged.** `offset` counts from the start of the file and a negative one raises `ValueError` rather than clamping; a negative `size` reads to the end; a read starting at or past the end returns `b""`, and one running past the end is truncated there. The defaults are byte-for-byte the whole-file read, so a caller that names neither argument is unaffected -- but a backend that does not *accept* both raises `TypeError` the first time a file object asks for a range.
+
+**`open()` is optional, and probed rather than required.** It is the one optional method whose absence costs nothing: a backend without one still gets a working `open()`, because the patch layer synthesizes a file object over `read`, `write` and `stat` -- `LazyBinaryFile` for a binary read, a buffered `VirtualFile` for text and every write mode. A backend that *has* an `open()` is asked for it instead, by the patch layer and by both wrappers, because a filesystem over real files can hand back a real file descriptor and a synthesized object cannot: `IsolatedFS.open()` returns an `io.open` handle over the resolved host path, where `fileno()`, streaming writes and `mmap` work natively.
+
+### `check_filesystem(fs)`
+
+The conformance kit, shipped in the package and stdlib-only, so writing a backend needs this library and nothing else:
+
+```python
+from monkeyfs import check_filesystem
+
+check_filesystem(MyFileSystem())   # an empty one; it writes and cleans up
+```
+
+It exercises the required methods, directories and the working directory, `stat`/`list`/`read` over a written file, every ranged-read case (including the ones a backend that accepts `offset` and `size` and then ignores them fails), `rename`/`remove`, and `open()` -- the backend's own where it has one, the synthesized one under `patch()` where it does not. It raises `AssertionError` on the first violation, naming the method and what was expected of it. Takes a scratch path as an optional second argument (default `/monkeyfs_conformance`), which must not already exist.
 
 **Direct-use methods** (`DIRECT_READ_METHODS`, `DIRECT_WRITE_METHODS`) -- no stdlib shim dispatches to these, but callers reach for them and both wrappers forward them:
 
@@ -213,6 +235,8 @@ remove_many(paths) -> None
 ### termish compatibility
 
 `VirtualFS`, `IsolatedFS`, `ReadOnlyFS`, and `MountFS` all satisfy the [termish](https://github.com/ashenfad/termish) `FileSystem` protocol, which covers direct-use methods (`read`, `write`, `list_detailed`, `glob`, etc.) beyond the patching surface above. This means any can be passed directly to termish's terminal interpreter for shell command execution over the virtual filesystem.
+
+The two protocols are the same sixteen methods with the same signatures, ranged `read` included, and the agreement runs both ways: a termish-shaped filesystem needs no `open()` to be patchable here, because monkeyfs synthesizes one over its `read`/`write`/`stat`. Neither library imports the other -- a shared package would cost both their zero-dependency line for twenty lines of protocol -- so the agreement is held by tests on both sides, of which `check_filesystem()` is this one's half.
 
 ### `FileMetadata`
 
@@ -261,5 +285,6 @@ current_fs.get()  # None (no patching active)
 - **Extended attributes are absent, not forwarded** -- The xattr family is Linux-only, and no backend stores extended attributes. While `patch()` is in effect, `os.listxattr()` returns `[]` -- the file genuinely has none -- `os.getxattr()` raises `OSError(errno.ENODATA)`, and `os.setxattr()` / `os.removexattr()` raise `OSError(errno.ENOTSUP)` so a write fails loudly instead of being silently dropped. None of them looks at the host, so a virtual path never reaches a real file. `shutil.copystat()` (and `copy2()`, `copytree()`) and `pathlib.Path.copy()` tolerate exactly these errnos and carry on.
 - **A write-mode `os.open()` under `ReadOnlyFS` is refused at `os.close()`** -- The fd table buffers a virtual fd in memory and calls `fs.write()` only when the fd is closed, so `os.open(path, os.O_WRONLY)` on an existing file succeeds and `os.write()` into it appears to, while the `PermissionError` arrives at `os.close()`. No content reaches the wrapped filesystem, but code that never closes the fd never sees the refusal. `builtins.open()` in a write mode, and `os.open()` with `O_CREAT` on a new path, are both refused at the call itself.
 - **`os.path.realpath(strict=True)` checks the final path only** -- No backend resolves a path component by component; each answers with the canonical form of the whole string. While `patch()` is in effect, strict resolution is therefore an existence check on the result: the path resolves, and `FileNotFoundError(errno.ENOENT)` is raised if nothing is there -- which is also the answer for a path outside the filesystem, since nothing exists there from the caller's side. What the stdlib would additionally report is an error met partway along, such as a non-directory used as one or a symlink loop; no backend can produce either. Existence is decided by the patched `os.path.exists()`, so a safe system path readable through the host passthrough resolves strictly rather than being reported missing. `strict=os.path.ALLOW_MISSING` (3.13.4+) means "strict, except that a missing path is not an error" -- which is what the unchecked resolution already gives -- so it returns the resolved path. `pathlib.Path.resolve(strict=True)` routes here on every supported version.
+- **A synthesized file object has no file descriptor** -- `fileno()` raises `io.UnsupportedOperation` on the file objects monkeyfs builds over a backend's `read`/`write`, so `mmap`, `os.fstat()` on the handle and any C library handed the descriptor have nothing to work with. There is no descriptor to give: the bytes live in a state mapping, not in a file the kernel knows about. Readers that probe for one and fall back -- pyarrow among them -- are unaffected. A backend with real files behind it can do better and is asked to: `IsolatedFS.open()` returns a real `io.open` handle, where `fileno()`, streaming writes, files larger than memory and `mmap` all work.
 - **C-level syscalls** -- Libraries that call the OS directly from C extensions (e.g. SQLite, `mmap`) bypass Python-level patches entirely. Only Python-level file operations are intercepted.
 - **`fcntl` locking** -- `fcntl`, `flock`, and `lockf` are no-ops under VFS since virtual files have no real file descriptors. Code that depends on advisory locking semantics will not see contention.

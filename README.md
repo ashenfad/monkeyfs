@@ -92,6 +92,20 @@ with patch(fs):
     open("/chapters/new.md", "w")  # PermissionError
 ```
 
+## The backend protocol
+
+A backend is any object with the right methods -- no inheritance, no base class. monkeyfs's backend protocol and [termish](https://github.com/ashenfad/termish)'s `FileSystem` protocol are the same sixteen methods with the same signatures, including the ranged `read(path, offset=0, size=-1)`. `open()` is what monkeyfs provides *over* a backend rather than something it asks for -- a file object synthesized from `read`, `write` and `stat`, lazy in binary read modes -- and a backend that has a better one (a real directory, where `fileno()` and `mmap` work) may offer its own, which monkeyfs prefers. The agreement between the two libraries is a convention enforced by tests in both, not a shared import: a third package would cost both of them their zero-dependency line for twenty lines of protocol.
+
+So a filesystem written for either library works under the other, and under monkeyfs it is a Python `open()` for free. The conformance kit says whether yours is one:
+
+```python
+from monkeyfs import check_filesystem
+
+check_filesystem(MyFileSystem())   # an empty one; it writes and cleans up
+```
+
+It raises `AssertionError` naming the method and what was expected of it -- including the ranged-read cases a backend that accepts `offset` and `size` and quietly ignores them would otherwise pass.
+
 ## Part of the agex stack
 
 monkeyfs provides filesystem interception for [sandtrap](https://github.com/ashenfad/sandtrap) and [agex](https://github.com/ashenfad/agex), giving sandboxed agent code an isolated virtual filesystem. `VirtualFS` accepts any dict-like backing store -- including [kvgit](https://github.com/ashenfad/kvgit) `Staged` instances for a versioned filesystem with commit/rollback.
