@@ -12,6 +12,7 @@ import os
 from typing import Any, Callable
 
 from .base import READ_METHODS, WRITE_METHODS
+from .virtualfile import open_file
 
 # The read/write split lives in ``base.py``, beside the protocol it classifies,
 # and both sets are re-exported here under the names ``docs/api.md`` and
@@ -120,10 +121,20 @@ class ReadOnlyFS:
         mode -- ``r+`` included -- into an update mode that can write in place.
         Everything left (``r``, ``rb``, ``rt``, and encoding/newline kwargs) is
         a pure read.
+
+        A wrapped filesystem with no ``open()`` of its own -- it is optional
+        on a backend -- gets one synthesized over its ``read()``. Synthesizing
+        it against the wrapped filesystem rather than the wrapper is safe
+        precisely because only read modes get this far: a write mode was
+        refused above, so nothing here can reach a ``write()`` the wrapper
+        would have refused.
         """
         if any(c in mode for c in "wax+"):
             self._deny()
-        return self._fs.open(path, mode, **kwargs)
+        backend_open = getattr(self._fs, "open", None)
+        if backend_open is not None:
+            return backend_open(path, mode, **kwargs)
+        return open_file(self._fs, path, mode, **kwargs)
 
     def access(self, path: str, mode: int) -> bool:
         """Answer ``os.access()``; write access is always denied."""

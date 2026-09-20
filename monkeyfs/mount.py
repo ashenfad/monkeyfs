@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .base import FileInfo, FileMetadata
+from .virtualfile import open_file
 
 
 class MountFS:
@@ -164,8 +165,19 @@ class MountFS:
     # -- Read operations --
 
     def open(self, path: str, mode: str = "r", **kwargs: Any) -> Any:
+        """Open ``path`` on the filesystem that owns it.
+
+        That filesystem's own ``open()`` is preferred where it has one, so a
+        mount over real files keeps handing out real file objects. Where it
+        has none -- ``open()`` is optional on a backend -- a file object is
+        synthesized over its ``read()``/``write()``, so mounting a
+        bytes-level filesystem does not make it unopenable.
+        """
         fs, inner = self._resolve(path)
-        return fs.open(inner, mode, **kwargs)
+        backend_open = getattr(fs, "open", None)
+        if backend_open is not None:
+            return backend_open(inner, mode, **kwargs)
+        return open_file(fs, inner, mode, **kwargs)
 
     def read(self, path: str, offset: int = 0, size: int = -1) -> bytes:
         """Read bytes from the filesystem that owns ``path``, range and all.

@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 
 @dataclass
@@ -113,18 +113,26 @@ class FileInfo:
 #: these cannot be patched. ``chdir`` is here as a read: it moves the
 #: filesystem's own working directory and stores nothing.
 REQUIRED_READ_METHODS = frozenset(
-    {"chdir", "exists", "getcwd", "isdir", "isfile", "list", "open", "stat"}
+    {"chdir", "exists", "getcwd", "isdir", "isfile", "list", "stat"}
 )
 REQUIRED_WRITE_METHODS = frozenset({"makedirs", "mkdir", "remove", "rename"})
 
 #: Probed by the patch layer (``_require()``, ``getattr``, ``hasattr``): the
 #: corresponding stdlib call raises ``NotImplementedError`` when the backend
 #: has no such method, rather than the patch failing to install.
+#:
+#: ``open`` is the one that does not raise. A backend without one still gets a
+#: working ``builtins.open()``: the patch layer synthesizes a file object over
+#: ``read``/``write``/``stat``, lazy in binary read modes and buffered
+#: otherwise. A backend that has an ``open()`` is asked for it instead,
+#: because a filesystem over real files can hand back a real file descriptor
+#: and a synthesized object cannot.
 OPTIONAL_READ_METHODS = frozenset(
     {
         "access",
         "getsize",
         "islink",
+        "open",
         "read",
         "readlink",
         "realpath",
@@ -206,8 +214,20 @@ class FileSystem(Protocol):
     needs one raises ``NotImplementedError`` when it is called:
 
     ``access``, ``chmod``, ``chown``, ``getsize``, ``islink``, ``link``,
-    ``read``, ``readlink``, ``realpath``, ``replace``, ``resolve_path``,
-    ``rmdir``, ``samefile``, ``symlink``, ``truncate``, ``utime``, ``write``.
+    ``open``, ``read``, ``readlink``, ``realpath``, ``replace``,
+    ``resolve_path``, ``rmdir``, ``samefile``, ``symlink``, ``truncate``,
+    ``utime``, ``write``.
+
+    ``open`` is optional in a different way from the rest, and worth stating
+    on its own: a backend without one loses nothing, because ``open()`` is
+    what monkeyfs provides over a filesystem rather than something it asks
+    for. The patch layer synthesizes a file object from ``read``, ``write``
+    and ``stat`` -- a lazy block-cached stream for a binary read, a buffered
+    one that writes back on close otherwise -- so the sixteen bytes-level
+    methods are enough to be a Python filesystem. A backend that offers an
+    ``open()`` is preferred to the synthesized one: ``IsolatedFS`` returns a
+    real ``io.open`` handle over the host path, where ``fileno()``, streaming
+    writes and ``mmap`` work natively.
 
     Beyond the patch surface, ``DIRECT_READ_METHODS`` and
     ``DIRECT_WRITE_METHODS`` name the methods callers use directly (``glob``,
@@ -220,10 +240,6 @@ class FileSystem(Protocol):
 
     Required — patching will fail without these:
     """
-
-    def open(self, path: str, mode: str = "r", **kwargs: Any) -> Any:
-        """Open a file."""
-        ...
 
     def stat(self, path: str) -> FileMetadata:
         """Get file metadata."""

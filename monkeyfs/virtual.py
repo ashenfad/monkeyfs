@@ -12,7 +12,7 @@ from collections.abc import MutableMapping
 from datetime import datetime, timezone
 
 from .base import FileInfo, FileMetadata
-from .virtualfile import LazyBinaryFile, VirtualFile
+from .virtualfile import LazyBinaryFile, VirtualFile, open_file
 
 
 class VirtualFS:
@@ -599,48 +599,16 @@ class VirtualFS:
         Raises:
             FileNotFoundError: If reading a file that doesn't exist.
             ValueError: If mode is invalid.
+
+        Note:
+            This is the same ``open()`` the patch layer synthesizes for a
+            backend that has none, built from this filesystem's own
+            ``read()``, ``write()`` and ``stat()``. It is kept as a method
+            because a caller holding a ``VirtualFS`` directly expects to be
+            able to open a file on it, not because it does anything the
+            protocol cannot.
         """
-        key = self._encode_path(path)
-
-        if (
-            "r" in mode
-            and "+" not in mode
-            and "w" not in mode
-            and "a" not in mode
-            and "x" not in mode
-        ):
-            # Read mode
-            if "b" in mode:
-                # Nothing is fetched here: the reader's first seek and read
-                # decide which bytes cross from the state at all.
-                if key not in self._state:
-                    raise FileNotFoundError(path)
-                return LazyBinaryFile(self, path)
-
-            content = self._state.get(key)
-            if content is None:
-                raise FileNotFoundError(path)
-            return io.StringIO(content.decode("utf-8"))
-
-        elif "w" in mode or "a" in mode or "x" in mode or ("r" in mode and "+" in mode):
-            # Write, append, or exclusive creation mode
-            if "r" in mode and "+" in mode and self._state.get(key) is None:
-                raise FileNotFoundError(path)
-
-            if "x" in mode and self.exists(path):
-                raise FileExistsError(f"[Errno 17] File exists: '{path}'")
-
-            # Validate parent directory exists (POSIX: open() fails with ENOENT)
-            resolved = self.resolve_path(path)
-            normalized = self._normalize_path(resolved)
-            parent = "/".join(normalized.split("/")[:-1])
-            if parent and not self.isdir("/" + parent):
-                raise FileNotFoundError(f"No such file or directory: '{path}'")
-
-            return VirtualFile(self, self._state, key, path, mode)
-
-        else:
-            raise ValueError(f"Invalid mode: {mode}")
+        return open_file(self, path, mode, **kwargs)
 
     def read(self, path: str, offset: int = 0, size: int = -1) -> bytes:
         """Read file contents as bytes, optionally a byte range of them.

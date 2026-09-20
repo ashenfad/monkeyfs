@@ -16,13 +16,11 @@ from __future__ import annotations
 
 import io
 import os
+import posixpath
 import warnings
 from collections import OrderedDict
-from collections.abc import Iterable, MutableMapping
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from .virtual import VirtualFS
+from collections.abc import Iterable
+from typing import Any
 
 #: Bytes fetched per backend call when a read is smaller than this.
 #:
@@ -255,31 +253,25 @@ class VirtualFile:
         mode: The file mode ('w', 'wb', 'a', 'ab', 'r+', 'rb+').
     """
 
-    def __init__(
-        self,
-        vfs: "VirtualFS",
-        state: MutableMapping[str, bytes],
-        key: str,
-        path: str,
-        mode: str,
-    ):
-        """Initialize a writable virtual file.
+    def __init__(self, fs: Any, path: str, mode: str):
+        """Initialize a buffered virtual file over any filesystem.
 
         Args:
-            vfs: The VirtualFS instance for metadata tracking.
-            state: State backend for persistence.
-            key: Encoded state key for this file.
-            path: Original file path (for error messages).
+            fs: Filesystem exposing ``read(path)`` and ``write(path, content)``.
+                The whole file is read back from it on close, so it is the
+                filesystem that gets the metadata tracking right, not this.
+            path: File path, as the filesystem understands it.
             mode: File open mode.
         """
-        self._vfs = vfs
-        self._state = state
-        self._key = key
+        self._fs = fs
         self._path = path
         self._mode = mode
         self._closed = False
 
-        existing = state.get(key)
+        # A truncating mode replaces the file, so its current content is not
+        # worth fetching: on a backend where a read crosses a wire, asking
+        # for bytes about to be discarded is the whole cost of the write.
+        existing = _read_or_none(fs, path) if ("a" in mode or "r" in mode) else None
         # Opening w/x mutates the file even without a subsequent write. Opening
         # a missing file in append mode creates it; an existing append file can
         # remain clean until data is written.
@@ -396,7 +388,7 @@ class VirtualFile:
         pass
 
     def close(self) -> None:
-        """Close the file and persist content to state with metadata tracking."""
+        """Close the file and persist content through the filesystem's write()."""
         if self._closed:
             return
 
@@ -405,8 +397,9 @@ class VirtualFile:
             if isinstance(content, str):
                 content = content.encode("utf-8")
 
-            # Use VFS write to get proper metadata tracking.
-            self._vfs.write(self._path, content)
+            # Through the filesystem's own write(), so that whatever metadata
+            # it tracks is updated the way a direct write would update it.
+            self._fs.write(self._path, content)
 
         self._closed = True
 
@@ -452,3 +445,81 @@ class VirtualFile:
 
     def __exit__(self, *args: object) -> None:
         self.close()
+
+
+def _read_or_none(fs: Any, path: str) -> bytes | None:
+    """The file's current bytes, or ``None`` where there is no file."""
+    try:
+        return fs.read(path)
+    except FileNotFoundError:
+        return None
+
+
+def _parent_dir(fs: Any, path: str) -> str:
+    """The absolute parent directory of ``path``, or ``""`` at the root."""
+    resolve = getattr(fs, "resolve_path", None)
+    resolved = resolve(path) if resolve is not None else path
+    parent = posixpath.dirname(posixpath.normpath(resolved).lstrip("/"))
+    return "/" + parent if parent else ""
+
+
+def open_file(fs: Any, path: str, mode: str = "r", **kwargs: Any) -> Any:
+    """Open ``path`` on a filesystem using only its bytes-level methods.
+
+    This is the ``open()`` monkeyfs provides over a backend that has none of
+    its own: everything here is built from ``read``, ``write``, ``stat``,
+    ``exists`` and ``isfile``, so a filesystem that answers those gets a
+    working ``builtins.open()`` -- lazy in ``"rb"``, buffered everywhere
+    else -- without implementing a file object.
+
+    A backend that *has* an ``open()`` is asked for it instead, by the patch
+    layer and by both wrappers. A real directory can hand back a real file
+    descriptor, and streaming writes, ``mmap`` and files larger than memory
+    all work there; routing those through a buffer would narrow the one
+    backend that has real files.
+
+    Args:
+        fs: The filesystem to open on.
+        path: File path, as that filesystem understands it.
+        mode: File mode ('r', 'rb', 'w', 'wb', 'a', 'ab', 'x', 'r+', 'rb+').
+        **kwargs: Accepted and ignored, the way the in-tree backends accept
+            and ignore ``encoding`` and friends; text is UTF-8.
+
+    Returns:
+        A file-like object: ``LazyBinaryFile`` for a binary read, an
+        ``io.StringIO`` for a text read, a ``VirtualFile`` otherwise.
+
+    Raises:
+        FileNotFoundError: Reading a file that is not there, or creating one
+            whose parent directory is not there (POSIX open()).
+        FileExistsError: Exclusive creation over an existing path.
+        ValueError: If the mode is not a mode.
+    """
+    if "r" in mode and not any(c in mode for c in "+wax"):
+        if "b" in mode:
+            # Nothing is read here; the reader's own seeks decide that.
+            if not fs.isfile(path):
+                raise FileNotFoundError(path)
+            return LazyBinaryFile(fs, path)
+        content = _read_or_none(fs, path)
+        if content is None:
+            raise FileNotFoundError(path)
+        return io.StringIO(content.decode("utf-8"))
+
+    if "w" in mode or "a" in mode or "x" in mode or ("r" in mode and "+" in mode):
+        if "r" in mode and "+" in mode and not fs.isfile(path):
+            raise FileNotFoundError(path)
+
+        if "x" in mode and fs.exists(path):
+            raise FileExistsError(f"[Errno 17] File exists: '{path}'")
+
+        # POSIX open() fails with ENOENT on a missing parent rather than
+        # creating the tree, and a direct write() that creates parents for
+        # convenience must not make open() more forgiving than the real one.
+        parent = _parent_dir(fs, path)
+        if parent and not fs.isdir(parent):
+            raise FileNotFoundError(f"No such file or directory: '{path}'")
+
+        return VirtualFile(fs, path, mode)
+
+    raise ValueError(f"Invalid mode: {mode}")

@@ -152,6 +152,30 @@ class TestDispatchSurface:
         )
 
 
+class TestOpenIsProbedNotRequired:
+    """``open()`` is what monkeyfs provides over a backend, not a demand."""
+
+    def test_open_is_classified_optional(self):
+        assert "open" not in REQUIRED_METHODS
+        assert "open" in OPTIONAL_READ_METHODS
+
+    def test_the_patch_layer_probes_rather_than_calls_it(self):
+        """A probe, so a backend without one gets a synthesized file object."""
+        probed = set().union(*_dispatched_names().values())
+        assert "open" in probed
+
+    def test_a_backend_without_open_satisfies_the_protocol(self):
+        """The isinstance() check is the required set, and open left it."""
+
+        class NoOpen:
+            pass
+
+        for name in REQUIRED_METHODS:
+            setattr(NoOpen, name, lambda self, *args, **kwargs: None)
+
+        assert isinstance(NoOpen(), FileSystem)
+
+
 class TestVirtualFSSurface:
     """VirtualFS implements the whole protocol, so it is the reference."""
 
