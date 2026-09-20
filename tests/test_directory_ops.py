@@ -4,6 +4,7 @@ These tests verify the explicit directory support and current working directory
 functionality added to VirtualFS.
 """
 
+import errno
 import os
 
 import pytest
@@ -102,6 +103,65 @@ class TestVFSMakedirs:
 
         with pytest.raises(FileExistsError):
             vfs.makedirs("a/b/c")
+
+    def test_makedirs_exist_ok_false_raises_on_an_existing_directory(self):
+        """An existing directory is an error unless exist_ok says otherwise."""
+        vfs = VirtualFS({})
+        vfs.mkdir("d")
+
+        with pytest.raises(FileExistsError) as caught:
+            vfs.makedirs("d", exist_ok=False)
+
+        assert caught.value.errno == errno.EEXIST
+
+    def test_makedirs_exist_ok_false_raises_on_an_implicit_directory(self):
+        """A directory a file path passes through exists like any other."""
+        vfs = VirtualFS({})
+        vfs.write("d/file.txt", b"content")
+
+        assert vfs.isdir("d") is True
+        with pytest.raises(FileExistsError) as caught:
+            vfs.makedirs("d", exist_ok=False)
+
+        assert caught.value.errno == errno.EEXIST
+
+    def test_makedirs_exist_ok_true_is_silent(self):
+        """The default keeps working on a tree that is already there."""
+        vfs = VirtualFS({})
+        vfs.makedirs("a/b/c")
+
+        vfs.makedirs("a/b/c")
+        vfs.makedirs("a/b/c", exist_ok=True)
+
+        assert vfs.isdir("a/b/c") is True
+
+    def test_makedirs_exist_ok_false_still_creates_a_missing_tree(self):
+        """Raising on what exists must not stop it creating what does not."""
+        vfs = VirtualFS({})
+        vfs.mkdir("a")
+
+        vfs.makedirs("a/b/c", exist_ok=False)
+
+        assert vfs.isdir("a/b") is True
+        assert vfs.isdir("a/b/c") is True
+
+    def test_mkdir_parents_exist_ok_false_raises_on_an_existing_directory(self):
+        """parents=True must not soften the check exist_ok=False asks for."""
+        vfs = VirtualFS({})
+        vfs.makedirs("a/b")
+
+        with pytest.raises(FileExistsError) as caught:
+            vfs.mkdir("a/b", parents=True, exist_ok=False)
+
+        assert caught.value.errno == errno.EEXIST
+
+    def test_mkdir_parents_exist_ok_true_is_silent(self):
+        vfs = VirtualFS({})
+        vfs.makedirs("a/b")
+
+        vfs.mkdir("a/b", parents=True, exist_ok=True)
+
+        assert vfs.isdir("a/b") is True
 
 
 class TestVFSRmdir:
@@ -310,6 +370,17 @@ class TestVFSOsPatches:
             assert os.path.isdir("a") is True
             assert os.path.isdir("a/b") is True
             assert os.path.isdir("a/b/c") is True
+
+    def test_os_makedirs_defaults_to_refusing_an_existing_directory(self):
+        """os.makedirs() raises on a directory that is already there."""
+        vfs = VirtualFS({})
+        vfs.mkdir("a")
+
+        with patch(vfs):
+            with pytest.raises(FileExistsError):
+                os.makedirs("a")
+
+            os.makedirs("a", exist_ok=True)
 
     def test_os_path_abspath_respects_cwd(self):
         """os.path.abspath resolves against virtual CWD."""

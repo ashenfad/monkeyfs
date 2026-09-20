@@ -266,11 +266,11 @@ class FileSystem(Protocol):
         ...
 
     def mkdir(self, path: str, parents: bool = False, exist_ok: bool = False) -> None:
-        """Create a directory."""
+        """Create a directory; raise FileExistsError unless exist_ok."""
         ...
 
     def makedirs(self, path: str, exist_ok: bool = True) -> None:
-        """Create directory tree."""
+        """Create directory tree; raise FileExistsError unless exist_ok."""
         ...
 
     def rename(self, src: str, dst: str) -> None:
