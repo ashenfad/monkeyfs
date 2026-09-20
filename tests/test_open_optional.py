@@ -180,13 +180,18 @@ class TermishFS:
     def list_detailed(self, path: str = ".", recursive: bool = False) -> list[FileInfo]:
         entries = []
         base = self._abs(path)
+        prefix = path.rstrip("/")
         for name in self.list(path, recursive):
             full = posixpath.join(base, name)
+            # The queried directory joined with the entry: an absolute query
+            # answers absolute, a relative one answers relative to the same
+            # place the caller named.
+            display = f"{prefix}/{name}" if prefix != "." else name
             meta = self.stat(full)
             entries.append(
                 FileInfo(
                     name=name,
-                    path=full,
+                    path=display,
                     size=meta.size,
                     created_at=meta.created_at,
                     modified_at=meta.modified_at,
