@@ -564,6 +564,29 @@ class TestNestedMountListing:
         paths = [e.path for e in fs.list_detailed("/", recursive=True)]
         assert "/workspace/data/out/o.txt" in paths
 
+    def test_list_detailed_over_an_isolated_mount_stays_in_the_namespace(
+        self, tmp_path
+    ):
+        """The mount prefix goes on once, and the sandbox root never appears."""
+        inner = IsolatedFS(str(tmp_path))
+        inner.write("sub/one.txt", b"x")
+        fs = MountFS(VirtualFS({}), {"/data": inner})
+        fs.write("/top.txt", b"t")
+
+        assert [e.path for e in fs.list_detailed("/")] == ["/data", "/top.txt"]
+        assert [e.path for e in fs.list_detailed("/data", recursive=True)] == [
+            "/data/sub",
+            "/data/sub/one.txt",
+        ]
+        for entry in fs.list_detailed("/", recursive=True):
+            assert not entry.path.startswith("//")
+            assert str(tmp_path) not in entry.path
+            if not entry.is_dir:
+                assert fs.read(entry.path)
+
+        fs.chdir("/data")
+        assert [e.path for e in fs.list_detailed("sub")] == ["sub/one.txt"]
+
     def test_an_implicit_parent_inside_a_mount_lists_like_one_in_the_base(self):
         outer = VirtualFS()
         deep = VirtualFS()

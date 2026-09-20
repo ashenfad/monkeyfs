@@ -261,6 +261,76 @@ class TestMountFSForwarding:
         mount.invalidate()  # must not raise
 
 
+class TestListingPathsAgreeAcrossBackends:
+    """``FileInfo.path`` is the queried directory joined with the entry.
+
+    A listing answers in the namespace it was asked in: an absolute query in
+    absolute paths, a relative one relative to the place the caller named.
+    Every backend answers the same, because the path is the caller's to use
+    -- to read, to pass back in, to show -- and a backend that answers in its
+    own storage layout instead hands back something that names the file to
+    nobody but itself.
+    """
+
+    BACKENDS = {
+        "virtual": lambda tmp: VirtualFS({}),
+        "isolated": lambda tmp: IsolatedFS(str(tmp)),
+        "mounted": lambda tmp: MountFS(VirtualFS({})),
+    }
+
+    @pytest.fixture(params=sorted(BACKENDS))
+    def fs(self, request, tmp_path):
+        filesystem = self.BACKENDS[request.param](tmp_path)
+        filesystem.makedirs("/probe/sub/deep")
+        filesystem.write("/probe/sub/deep/three.txt", b"three")
+        filesystem.write("/probe/sub/one.txt", b"one")
+        filesystem.write("/probe/two.txt", b"two")
+        return filesystem
+
+    @staticmethod
+    def paths(fs, path, recursive=False):
+        return sorted(info.path for info in fs.list_detailed(path, recursive))
+
+    def test_absolute_query(self, fs):
+        assert self.paths(fs, "/probe") == ["/probe/sub", "/probe/two.txt"]
+
+    def test_absolute_query_recursive(self, fs):
+        assert self.paths(fs, "/probe", True) == [
+            "/probe/sub",
+            "/probe/sub/deep",
+            "/probe/sub/deep/three.txt",
+            "/probe/sub/one.txt",
+            "/probe/two.txt",
+        ]
+
+    def test_root_query(self, fs):
+        assert self.paths(fs, "/") == ["/probe"]
+
+    def test_a_trailing_slash_does_not_double(self, fs):
+        assert self.paths(fs, "/probe/") == ["/probe/sub", "/probe/two.txt"]
+
+    def test_relative_query(self, fs):
+        fs.chdir("/probe")
+        assert self.paths(fs, "sub") == ["sub/deep", "sub/one.txt"]
+
+    def test_relative_query_recursive(self, fs):
+        fs.chdir("/probe")
+        assert self.paths(fs, "sub", True) == [
+            "sub/deep",
+            "sub/deep/three.txt",
+            "sub/one.txt",
+        ]
+
+    def test_the_cwd_itself_is_named_by_its_children(self, fs):
+        fs.chdir("/probe")
+        assert self.paths(fs, ".") == ["sub", "two.txt"]
+
+    def test_a_listed_path_reads_back(self, fs):
+        for info in fs.list_detailed("/probe", True):
+            if not info.is_dir:
+                assert fs.exists(info.path), info.path
+
+
 class TestReadOnlyFSForwarding:
     """The wrapper's allowlist comes from the protocol, so it cannot drift."""
 

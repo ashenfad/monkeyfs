@@ -570,6 +570,14 @@ class IsolatedFS:
     def list_detailed(self, path: str = ".", recursive: bool = False) -> list[FileInfo]:
         """List directory with detailed file information.
 
+        Each ``FileInfo.path`` is the directory as it was asked for, joined
+        with the entry's path relative to it: listing ``"/src"`` names
+        ``"/src/lib/util.py"`` and listing ``"src"`` names ``"src/lib/util.py"``.
+        So an absolute query answers in absolute paths and a relative one
+        answers relative to the same place the caller named, and neither ever
+        carries the host location of the root -- what comes back is a path
+        this filesystem accepts back.
+
         Args:
             path: Directory path to list.
             recursive: If True, list all nested items.
@@ -582,15 +590,17 @@ class IsolatedFS:
 
             result = []
             items = resolved.rglob("*") if recursive else resolved.iterdir()
+            prefix = path.rstrip("/")
 
             for item in items:
-                rel_path = str(item.relative_to(self.root))
+                relative = item.relative_to(resolved).as_posix()
+                display = f"{prefix}/{relative}" if prefix != "." else relative
                 stat_info = item.stat()
 
                 result.append(
                     FileInfo(
                         name=item.name,
-                        path=rel_path,
+                        path=display,
                         is_dir=item.is_dir(),
                         size=stat_info.st_size if item.is_file() else 0,
                         created_at=datetime.fromtimestamp(

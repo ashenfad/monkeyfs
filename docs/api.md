@@ -95,6 +95,8 @@ with patch(isolated):
     open("/etc/passwd")  # PermissionError
 ```
 
+**Every path it hands back is virtual**, with the root reported as `/`: `realpath()`, `readlink()` and `list_detailed()` all answer in the filesystem's own namespace and never in the host's, so the root's real location is not readable out of a listing and what comes back is a path this filesystem accepts back. `list_detailed("/src")` names `/src/lib/util.py` and `list_detailed("src")` names `src/lib/util.py` -- the directory as it was asked for, joined with the entry -- the same values `VirtualFS` gives for the same tree. Reach for the real location deliberately through `fs.root`.
+
 ### `ReadOnlyFS(fs)`
 
 Wraps any filesystem and enforces read-only access with an allowlist: the operations named as read-only are forwarded, and everything else raises `PermissionError`.
@@ -247,6 +249,8 @@ Dataclass returned by `stat()`. Fields: `size`, `created_at`, `modified_at`, `is
 ### `FileInfo`
 
 Dataclass for UI display. Fields: `name`, `path`, `size`, `created_at`, `modified_at`, `is_dir`.
+
+`path` is the queried directory joined with the entry's path relative to it, so `list_detailed("/src", recursive=True)` names `/src/lib/util.py` and `list_detailed("src", recursive=True)` names `src/lib/util.py`. `name` is the basename either way. Every backend answers the same, so a path out of a listing can be read, passed back in, or shown, whichever filesystem produced it.
 
 ## Low-level
 
