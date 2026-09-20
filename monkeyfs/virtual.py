@@ -1325,7 +1325,10 @@ class VirtualFS:
             recursive: If True, list all nested files and directories.
 
         Returns:
-            List of FileInfo objects sorted by name.
+            List of FileInfo objects sorted by path relative to the queried
+            directory, so a directory precedes its contents. ``name`` is the
+            entry's own name, the last component of ``path``, at every depth;
+            it is not what the list is ordered by.
 
         Example:
             >>> files = vfs.list_detailed("/shared")
