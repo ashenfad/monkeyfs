@@ -250,11 +250,26 @@ class IsolatedFS:
             resolved = self._validate_path(path)
             return io.open(resolved, mode, **kwargs)
 
-    def read(self, path: str) -> bytes:
-        """Read entire file as bytes."""
+    def read(self, path: str, offset: int = 0, size: int = -1) -> bytes:
+        """Read a file as bytes, or a byte range of it.
+
+        The defaults read the whole file. A range seeks the host file and
+        reads only what was asked for, so reading the last kilobyte of a
+        gigabyte costs a kilobyte; a read at or past the end returns ``b""``
+        and one running past the end is truncated there.
+
+        Raises:
+            ValueError: If offset is negative.
+        """
+        if offset < 0:
+            raise ValueError(f"negative read offset: {offset}")
         with suspend():
             resolved = self._validate_path(path)
-            return resolved.read_bytes()
+            if offset == 0 and size < 0:
+                return resolved.read_bytes()
+            with io.open(resolved, "rb") as handle:
+                handle.seek(offset)
+                return handle.read() if size < 0 else handle.read(size)
 
     def write(self, path: str, content: bytes, mode: str = "w") -> None:
         """Write bytes to file, creating parent directories if needed.

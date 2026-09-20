@@ -189,7 +189,7 @@ link(src, dst) -> None          # os.link
 chmod(path, mode) -> None       # os.chmod, os.lchmod
 chown(path, uid, gid) -> None   # os.chown
 truncate(path, length) -> None  # os.truncate
-read(path) -> bytes             # os.open, os.read (fd emulation)
+read(path, offset=0, size=-1) -> bytes  # os.open, os.read (fd emulation)
 write(path, content, mode="w")  # os.close, flushing a virtual fd
 resolve_path(path) -> str       # os.open (fd table path resolution)
 ```
