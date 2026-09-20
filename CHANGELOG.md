@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **A recursive `list_detailed()` put the entry's relative path in `FileInfo.name`.** `VirtualFS` and `MountFS` built each `FileInfo` from the names `list(recursive=True)` returns, which are paths relative to the queried directory, so a nested entry came back as `name="sub/two.txt"` where the field is documented as the basename and `IsolatedFS` already answered `"two.txt"`. A consumer keying on `name` -- a listing that prints it, a filter that joins it onto the directory -- got a different answer from the same tree depending on which backend held it. `name` is now the last path component at every depth on every backend, `path` is unchanged, and the conformance kit checks the relationship between the two for every entry of a recursive listing. **A caller that joined `name` onto the queried directory to rebuild the entry's path** was relying on the bug and now gets the wrong path for nested entries; `FileInfo.path` already holds that value.
+
 ## [0.2.1] - 2026-09-20
 
 ### Fixed

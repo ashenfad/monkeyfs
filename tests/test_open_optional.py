@@ -190,7 +190,7 @@ class TermishFS:
             meta = self.stat(full)
             entries.append(
                 FileInfo(
-                    name=name,
+                    name=posixpath.basename(name),
                     path=display,
                     size=meta.size,
                     created_at=meta.created_at,

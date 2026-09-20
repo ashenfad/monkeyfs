@@ -1350,7 +1350,9 @@ class VirtualFS:
             internal_path = f"{base}/{name}" if base else name
             absolute = "/" + internal_path
 
-            # Display path preserves the user's queried prefix
+            # Display path preserves the user's queried prefix; the name
+            # is the last component alone, whatever depth the entry sits at.
+            basename = name.rsplit("/", 1)[-1]
             display = f"{user_prefix}/{name}" if user_prefix != "." else name
 
             meta = self._meta_at(internal_path)
@@ -1360,7 +1362,7 @@ class VirtualFS:
                 now = self._now_iso()
                 result.append(
                     FileInfo(
-                        name=name,
+                        name=basename,
                         path=display,
                         size=0,
                         created_at=meta.created_at if meta is not None else now,
@@ -1371,7 +1373,7 @@ class VirtualFS:
             elif meta is not None:
                 result.append(
                     FileInfo(
-                        name=name,
+                        name=basename,
                         path=display,
                         size=meta.size,
                         created_at=meta.created_at,
@@ -1385,7 +1387,7 @@ class VirtualFS:
                 now = self._now_iso()
                 result.append(
                     FileInfo(
-                        name=name,
+                        name=basename,
                         path=display,
                         size=len(content),
                         created_at=now,

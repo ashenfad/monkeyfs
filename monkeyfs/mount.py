@@ -285,10 +285,11 @@ class MountFS:
         for name in names:
             full_abs = f"{norm}/{name}" if norm else f"/{name}"
             display = f"{user_prefix}/{name}" if user_prefix != "." else name
+            basename = name.rsplit("/", 1)[-1]
             meta = self.stat(full_abs)
             result.append(
                 FileInfo(
-                    name=name,
+                    name=basename,
                     path=display,
                     size=meta.size,
                     created_at=meta.created_at,

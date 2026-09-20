@@ -212,12 +212,21 @@ def _check_listing_paths(fs: Any, scratch: str) -> None:
             f"{absolute.get('probe.bin')!r}",
         )
 
-        deep = [info.path for info in fs.list_detailed(scratch, True)]
+        entries = fs.list_detailed(scratch, True)
+        deep = [info.path for info in entries]
         _require(
             f"{scratch}/nested/leaf.bin" in deep,
             f"a recursive list_detailed({scratch!r}) must name a nested entry "
             f"{scratch + '/nested/leaf.bin'!r}, got {deep!r}",
         )
+        for info in entries:
+            _require(
+                info.name == info.path.rsplit("/", 1)[-1],
+                f"list_detailed(...).name is the entry's own name, the last "
+                f"component of its path, at every depth: for path "
+                f"{info.path!r} expected {info.path.rsplit('/', 1)[-1]!r}, "
+                f"got {info.name!r}",
+            )
 
         start = fs.getcwd()
         fs.chdir(scratch)
