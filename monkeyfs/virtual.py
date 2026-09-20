@@ -637,23 +637,48 @@ class VirtualFS:
         else:
             raise ValueError(f"Invalid mode: {mode}")
 
-    def read(self, path: str) -> bytes:
-        """Read file contents as bytes.
+    def read(self, path: str, offset: int = 0, size: int = -1) -> bytes:
+        """Read file contents as bytes, optionally a byte range of them.
+
+        The defaults read the whole file, so a caller that names neither
+        argument gets exactly what it always got.
 
         Args:
             path: File path to read.
+            offset: Byte position to start at, counted from the start of the
+                file. A read at or past the end returns ``b""``.
+            size: Number of bytes to return; negative reads to the end of the
+                file. A range running past the end is truncated there rather
+                than short-changing the caller with an error.
 
         Returns:
-            File contents as bytes.
+            The requested bytes.
 
         Raises:
             FileNotFoundError: If file doesn't exist.
+            ValueError: If offset is negative. A file has no bytes before its
+                start, and silently clamping to zero would hand back data the
+                caller did not ask for.
+
+        Note:
+            The backing store is a ``MutableMapping[str, bytes]``, so the blob
+            still crosses from the store whole and the range is a slice of it.
+            The saving is upstream of that: a file object over this method
+            fetches only the ranges it is asked for, and a backend that can
+            range natively (an HTTP endpoint, a remote store) moves only those
+            bytes.
         """
+        if offset < 0:
+            raise ValueError(f"negative read offset: {offset}")
         key = self._encode_path(path)
         content = self._state.get(key)
         if content is None:
             raise FileNotFoundError(path)
-        return content
+        if offset == 0 and size < 0:
+            return content
+        if size < 0:
+            return content[offset:]
+        return content[offset : offset + size]
 
     def write(self, path: str, content: bytes, mode: str = "w") -> None:
         """Write bytes to a file.

@@ -167,9 +167,15 @@ class MountFS:
         fs, inner = self._resolve(path)
         return fs.open(inner, mode, **kwargs)
 
-    def read(self, path: str) -> bytes:
+    def read(self, path: str, offset: int = 0, size: int = -1) -> bytes:
+        """Read bytes from the filesystem that owns ``path``, range and all.
+
+        The range is forwarded rather than applied here: a backend that can
+        answer a range natively should be asked for one, and composing a
+        filesystem must not turn its ranged reads back into whole-file ones.
+        """
         fs, inner = self._resolve(path)
-        return fs.read(inner)
+        return fs.read(inner, offset, size)
 
     def stat(self, path: str) -> FileMetadata:
         abs_path = self._to_absolute(path)
