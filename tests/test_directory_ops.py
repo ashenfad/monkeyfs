@@ -479,7 +479,11 @@ def _nested_tree(fs):
 
 
 def _names_and_paths(fs):
-    return sorted((i.name, i.path) for i in fs.list_detailed("/probe", recursive=True))
+    # The sequence as returned, not a sorted copy: every backend orders a
+    # recursive listing by path relative to the queried directory, so a
+    # directory precedes its contents, and a backend that drifts from
+    # that order fails here rather than being tidied into agreement.
+    return [(i.name, i.path) for i in fs.list_detailed("/probe", recursive=True)]
 
 
 def test_virtualfs_recursive_listing_names_are_basenames():
