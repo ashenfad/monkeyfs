@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.1] - 2026-09-20
 
 ### Fixed
 - **`VirtualFS.makedirs(path, exist_ok=False)` returned silently on a directory that was already there.** The check looked only for a *file* at the path, so the one call whose entire purpose is to be told "that already exists" was the one call that never said it: `makedirs("/d", exist_ok=False)` on an existing `/d` succeeded, and so did `mkdir("/d", parents=True, exist_ok=False)`, which routes through it. `os.makedirs()` raises there, `IsolatedFS` raises there because it delegates to `os.makedirs()`, and now `VirtualFS` raises there too -- `FileExistsError` with `errno.EEXIST`, which is also what the `os.makedirs()` shim raises inside a `patch()` context, since `exist_ok` defaults to False on the stdlib signature. **A caller relying on the silent return now gets `FileExistsError`**, exactly as it would from `os.makedirs()`; pass `exist_ok=True` (the default on the backend protocol's own signature) to keep the old behaviour. An *implicit* directory -- one that is there only because a file path passes through it -- counts as existing, because nothing in this interface distinguishes it from an explicit one: `isdir()`, `exists()` and `list()` all answer the same for both, so the honest answer to "is it already there" is yes.
