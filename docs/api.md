@@ -56,6 +56,8 @@ vfs.list("/")                  # ["file.txt"]
 
 **Directory model:** Directories can be created explicitly with `mkdir()` or implicitly -- any file path like `a/b/file.txt` makes `a/` and `a/b/` visible to `isdir()`, `list()`, and `exists()`. The direct `vfs.write()` method auto-creates parent directories for convenience; patched `open()` does not (raises `FileNotFoundError` on missing parents, matching POSIX). `rmdir()` follows POSIX semantics -- fails on non-empty directories regardless of how they were created.
 
+**An implicit directory exists like any other.** `mkdir(path)` and `makedirs(path, exist_ok=False)` raise `FileExistsError(EEXIST)` for anything `isdir()` reports true for, whether it was created by `mkdir()` or is there only because a file path passes through it. The two are not distinguishable through this interface -- `isdir()`, `list()` and `exists()` all answer the same for both -- so a caller that asked to be told about a directory that is already there is told. `exist_ok=True`, the default on `makedirs()`, is silent either way.
+
 **Metadata storage:** Each path's `FileMetadata` is one state key, beside the blob it describes. A file's bytes live under `__vfs_<encoded path>` and its metadata under `__vfs_meta_<encoded path>`, with the same encoding on both, so a row and its blob are siblings. Directories created with `mkdir()` get a row of their own (`is_dir=True`); implicit directories have none.
 
 The rule a versioned backing store depends on: **a row is written whenever, and only when, its blob is written or its metadata changes.** Two writers touching different files touch disjoint keys, so blobs and rows both merge key by key with nothing to reconcile afterwards. Nothing else rewrites a row.

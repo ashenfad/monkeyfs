@@ -1027,7 +1027,10 @@ class VirtualFS:
             parents: If True, create parent directories as needed.
 
         Raises:
-            FileExistsError: If path exists (as file or dir when exist_ok=False).
+            FileExistsError: If path exists, as a file or -- unless exist_ok
+                is True -- as a directory. Any path isdir() reports True for
+                exists, including a directory that is there only because a
+                file path passes through it.
             FileNotFoundError: If parent doesn't exist and parents=False.
         """
         if parents:
@@ -1043,12 +1046,13 @@ class VirtualFS:
             raise FileNotFoundError(f"No such file or directory: '{path}'")
 
         # Check if already exists
+        absolute = "/" + normalized
         if self.isfile(path):
-            raise FileExistsError(f"File exists: {path}")
+            raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), absolute)
         if self.isdir(path):
             if exist_ok:
                 return
-            raise FileExistsError(f"Directory exists: {path}")
+            raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), absolute)
 
         # Create the directory's own row (implicit directories have none)
         now = datetime.now(timezone.utc).isoformat()
@@ -1061,23 +1065,33 @@ class VirtualFS:
     def makedirs(self, path: str, exist_ok: bool = True) -> None:
         """Create directory tree.
 
-        Creates all parent directories as needed.
+        Creates all parent directories as needed. With ``exist_ok`` False the
+        directory must not already be there: anything ``isdir()`` reports True
+        for counts as there, whether it was created by ``mkdir()`` or exists
+        only because a file path passes through it. A caller cannot tell the
+        two apart through this interface, so neither does the check.
 
         Args:
             path: Directory path.
             exist_ok: If True, don't raise if directory exists.
 
         Raises:
-            FileExistsError: If path exists as a file.
+            FileExistsError: If path exists as a file, or if it exists as a
+                directory and exist_ok is False.
         """
         path = self.resolve_path(path)
+
+        if not exist_ok and self.isdir(path):
+            absolute = "/" + path.strip("/")
+            raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), absolute)
+
         parts = path.strip("/").split("/")
 
         # Create each parent directory
         for i in range(len(parts)):
             dir_path = "/" + "/".join(parts[: i + 1])
             if self.isfile(dir_path):
-                raise FileExistsError(f"File exists: {dir_path}")
+                raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), dir_path)
             if not self.isdir(dir_path):
                 self.mkdir(dir_path, exist_ok=True)
 
