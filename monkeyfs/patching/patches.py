@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from ..context import current_fs
+from ..virtualfile import open_file
 from .core import (
     _fs_islink,
     _fs_list,
@@ -103,7 +104,15 @@ def _vfs_open(path: Any, *args: Any, **kwargs: Any) -> Any:
 
         token = _in_vfs_operation.set(True)
         try:
-            return fs.open(path_str, mode, **kwargs)
+            # A backend's own open() wins: it may have real files behind it,
+            # and a real file descriptor is something no object built over
+            # read()/write() can produce. Without one, the file object is
+            # synthesized from the bytes-level methods, so a filesystem that
+            # never heard of Python file objects still answers open().
+            backend_open = getattr(fs, "open", None)
+            if backend_open is not None:
+                return backend_open(path_str, mode, **kwargs)
+            return open_file(fs, path_str, mode, **kwargs)
         except (PermissionError, FileNotFoundError):
             if (
                 "w" not in mode
