@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.3] - 2026-09-27
 
 ### Changed
 - **The metadata scan reads every row in one call when the state can batch.** Building the full metadata set -- what `list()`, `list_detailed()`, `isdir()`/`exists()` on a directory, `write()`'s parent check and the size limit all rely on -- read each `__vfs_meta_` row with its own `get`, so a workspace of 5,000 files cost 5,000 reads every time the set was rebuilt, which is after every `invalidate()`. Over a networked store each of those is a round trip. A state that offers `get_many(*keys)` -- a mapping of the keys that exist to their values, as kvgit worktrees provide -- now answers the scan in one call. A plain `MutableMapping` is read key by key exactly as before, and what the scan returns is unchanged either way.
