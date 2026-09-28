@@ -410,6 +410,11 @@ class MountFS:
         # Group by filesystem, so each one answers its share in one call
         groups: dict[int, tuple[Any, dict[str, list[str]]]] = {}
         for path in paths:
+            if self._is_mount_point(self._to_absolute(path)):
+                # A mount point, or a directory the composition makes on
+                # the way to one: never a file here, whatever the base
+                # holds under the same name, just as ``isfile`` says.
+                continue
             fs, inner = self._resolve(path)
             key = id(fs)
             if key not in groups:
