@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import os
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -556,6 +557,17 @@ class IsolatedFS:
     def makedirs(self, path: str, exist_ok: bool = True) -> None:
         """Create directory tree (alias for mkdir with parents=True)."""
         self.mkdir(path, parents=True, exist_ok=exist_ok)
+
+    def read_many(self, paths: Iterable[str]) -> dict[str, bytes]:
+        """Read several whole files: path (as given) to bytes, for the
+        paths that are files. A path that is not one is left out."""
+        found: dict[str, bytes] = {}
+        for path in paths:
+            try:
+                found[path] = self.read(path)
+            except (FileNotFoundError, IsADirectoryError, NotADirectoryError):
+                continue
+        return found
 
     def write_many(self, files: dict[str, bytes]) -> None:
         """Write multiple files at once."""

@@ -8,7 +8,7 @@ import fnmatch
 import io
 import json
 import os
-from collections.abc import MutableMapping
+from collections.abc import Iterable, MutableMapping
 from datetime import datetime, timezone
 from typing import Any
 
@@ -677,6 +677,30 @@ class VirtualFS:
         if size < 0:
             return content[offset:]
         return content[offset : offset + size]
+
+    def read_many(self, paths: Iterable[str]) -> dict[str, bytes]:
+        """Read several whole files in one call to the backing state.
+
+        What ``read(path)`` returns for each path, gathered with a single
+        ``get_many`` when the state offers one -- so a caller reading a
+        whole tree pays one round trip to a remote store rather than one
+        per file.
+
+        Args:
+            paths: File paths to read, resolved against the current
+                working directory as ``read`` resolves them.
+
+        Returns:
+            Path (as given) to its bytes, for the paths that are files. A
+            path that is not one -- missing, or a directory -- is left out
+            rather than raised on: the caller asked about many at once and
+            learns which exist from the answer.
+        """
+        wanted: dict[str, list[str]] = {}
+        for path in paths:
+            wanted.setdefault(self._encode_path(path), []).append(path)
+        found = self._read_many(list(wanted))
+        return {path: content for key, content in found.items() for path in wanted[key]}
 
     def write(self, path: str, content: bytes, mode: str = "w") -> None:
         """Write bytes to a file.

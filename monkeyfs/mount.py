@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import errno
 import os
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import Any
 
@@ -388,6 +389,22 @@ class MountFS:
             drop = getattr(fs, "invalidate", None)
             if drop is not None:
                 drop()
+
+    def read_many(self, paths: Iterable[str]) -> dict[str, bytes]:
+        # Group by filesystem, so each one answers its share in one call
+        groups: dict[int, tuple[Any, dict[str, list[str]]]] = {}
+        for path in paths:
+            fs, inner = self._resolve(path)
+            key = id(fs)
+            if key not in groups:
+                groups[key] = (fs, {})
+            groups[key][1].setdefault(inner, []).append(path)
+        found: dict[str, bytes] = {}
+        for fs, inner_paths in groups.values():
+            for inner, content in fs.read_many(list(inner_paths)).items():
+                for path in inner_paths[inner]:
+                    found[path] = content
+        return found
 
     # -- Write operations --
 
