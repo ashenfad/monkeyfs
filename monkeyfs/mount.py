@@ -17,6 +17,22 @@ from .base import FileInfo, FileMetadata
 from .virtualfile import open_file
 
 
+def _read_many(fs: Any, paths: list[str]) -> dict[str, bytes]:
+    """``fs.read_many(paths)``, or one ``read`` per path on a filesystem
+    that predates it -- a mount can be any backend, and ``read_many`` is
+    not one of the methods a backend has to have."""
+    batch = getattr(fs, "read_many", None)
+    if batch is not None:
+        return batch(paths)
+    found: dict[str, bytes] = {}
+    for path in paths:
+        try:
+            found[path] = fs.read(path)
+        except (FileNotFoundError, IsADirectoryError, NotADirectoryError):
+            continue
+    return found
+
+
 class MountFS:
     """Routes filesystem operations to backing filesystems by path prefix.
 
@@ -401,7 +417,7 @@ class MountFS:
             groups[key][1].setdefault(inner, []).append(path)
         found: dict[str, bytes] = {}
         for fs, inner_paths in groups.values():
-            for inner, content in fs.read_many(list(inner_paths)).items():
+            for inner, content in _read_many(fs, list(inner_paths)).items():
                 for path in inner_paths[inner]:
                     found[path] = content
         return found

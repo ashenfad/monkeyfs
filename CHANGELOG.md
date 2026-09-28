@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **`read_many(paths)` reads several whole files in one call.** `VirtualFS` gathers them with a single `get_many` on a state that offers one (a kvgit worktree does), so a caller reading a whole tree -- a sync that tars a workspace, say -- pays one round trip to a networked store instead of one per file. It returns path (as given) to bytes for the paths that are files and leaves the rest out, rather than raising on the first missing one. `IsolatedFS` reads file by file, `MountFS` hands each filesystem its share in one call, and `ReadOnlyFS` forwards it: it is a `DIRECT_READ_METHODS` entry.
+- **`read_many(paths)` reads several whole files in one call.** `VirtualFS` gathers them with a single `get_many` on a state that offers one (a kvgit worktree does), so a caller reading a whole tree -- a sync that tars a workspace, say -- pays one round trip to a networked store instead of one per file. It returns path (as given) to bytes for the paths that are files and leaves the rest out, rather than raising on the first missing one. `IsolatedFS` reads file by file, `MountFS` hands each filesystem its share in one call (reading file by file from a mounted backend that has no `read_many`), and `ReadOnlyFS` forwards it: it is a `DIRECT_READ_METHODS` entry.
 
 ## [0.2.3] - 2026-09-27
 

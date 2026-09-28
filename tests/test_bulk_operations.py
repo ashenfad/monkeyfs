@@ -180,6 +180,25 @@ class TestReadMany:
         assert len(base_state.batches) == 1
         assert len(mounted_state.batches) == 1
 
+    def test_mount_reads_a_filesystem_without_it_file_by_file(self):
+        from monkeyfs import MountFS
+
+        class Plain:
+            """A mounted backend with ``read`` and no ``read_many``."""
+
+            def __init__(self, files):
+                self.files = files
+
+            def read(self, path):
+                try:
+                    return self.files[path]
+                except KeyError:
+                    raise FileNotFoundError(path) from None
+
+        fs = MountFS(VirtualFS({}), {"/p": Plain({"/x.txt": b"x"})})
+
+        assert fs.read_many(["/p/x.txt", "/p/y.txt"]) == {"/p/x.txt": b"x"}
+
     def test_read_only_forwards_it(self):
         from monkeyfs import ReadOnlyFS
 
