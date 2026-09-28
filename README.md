@@ -108,7 +108,7 @@ It raises `AssertionError` naming the method and what was expected of it -- incl
 
 ## Part of the agex stack
 
-monkeyfs provides filesystem interception for [sandtrap](https://github.com/ashenfad/sandtrap) and [agex](https://github.com/ashenfad/agex), giving sandboxed agent code an isolated virtual filesystem. `VirtualFS` accepts any dict-like backing store -- including [kvgit](https://github.com/ashenfad/kvgit) `Staged` instances for a versioned filesystem with commit/rollback.
+monkeyfs provides filesystem interception for [sandtrap](https://github.com/ashenfad/sandtrap) and [agex](https://github.com/ashenfad/agex), giving sandboxed agent code an isolated virtual filesystem. `VirtualFS` accepts any dict-like backing store -- including a [kvgit](https://github.com/ashenfad/kvgit) worktree for a versioned filesystem with commit/rollback. A store that offers `get_many(*keys)`, as kvgit worktrees do, has its metadata read in one batched call rather than one per file.
 
 ## Documentation
 

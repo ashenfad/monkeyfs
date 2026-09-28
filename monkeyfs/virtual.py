@@ -10,6 +10,7 @@ import json
 import os
 from collections.abc import MutableMapping
 from datetime import datetime, timezone
+from typing import Any
 
 from .base import FileInfo, FileMetadata
 from .virtualfile import LazyBinaryFile, VirtualFile, open_file
@@ -19,7 +20,8 @@ class VirtualFS:
     """State-backed virtual filesystem with metadata tracking.
 
     Provides file operations backed by agent state. Each file is stored
-    as a separate state key, enabling granular versioning with Staged state.
+    as a separate state key, enabling granular versioning with a versioned
+    state such as a kvgit worktree.
 
     File metadata (size, creation time, modification time) is automatically
     tracked for all files and can be accessed via stat() or list_detailed().
@@ -77,6 +79,11 @@ class VirtualFS:
 
         Args:
             state: State backend for file storage. Defaults to an empty dict.
+                A state may also offer ``get_many(*keys)``, returning a
+                mapping of the keys that exist to their values (as kvgit
+                worktrees do). Scans that read many keys then ask for them
+                in one call, which over a networked store is one round
+                trip instead of one per key.
             max_size_mb: Maximum total size of all files in megabytes.
                 None means unlimited.
         """
@@ -417,10 +424,10 @@ class VirtualFS:
             return self._all_meta
 
         rows: dict[str, FileMetadata] = {}
-        for key in list(self._state.keys()):
-            if not self.is_metadata_key(key):
-                continue
-            raw = self._state.get(key)
+        keys = [key for key in list(self._state.keys()) if self.is_metadata_key(key)]
+        found = self._read_many(keys)
+        for key in keys:
+            raw = found.get(key)
             if raw is None:
                 continue
             try:
@@ -435,6 +442,24 @@ class VirtualFS:
 
         self._all_meta = rows
         return rows
+
+    def _read_many(self, keys: list[str]) -> dict[str, Any]:
+        """The values of ``keys`` that exist in the state.
+
+        One ``get_many`` call when the state offers it, else one ``get``
+        per key.
+        """
+        if not keys:
+            return {}
+        get_many = getattr(self._state, "get_many", None)
+        if callable(get_many):
+            return dict(get_many(*keys))
+        found: dict[str, Any] = {}
+        for key in keys:
+            value = self._state.get(key)
+            if value is not None:
+                found[key] = value
+        return found
 
     def _get_current_size(self) -> int:
         """Get total size of all files in the VFS.
