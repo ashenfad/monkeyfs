@@ -180,6 +180,37 @@ class TestReadMany:
         assert len(base_state.batches) == 1
         assert len(mounted_state.batches) == 1
 
+    def test_isolated_skips_what_is_not_a_regular_file(self, tmp_path):
+        import os
+
+        from monkeyfs import IsolatedFS
+
+        fs = IsolatedFS(str(tmp_path))
+        fs.write("a.txt", b"a")
+        os.mkfifo(tmp_path / "pipe")  # a read would block for a writer
+        os.symlink(tmp_path / "a.txt", tmp_path / "link")
+
+        assert fs.read_many(["a.txt", "pipe", "link"]) == {
+            "a.txt": b"a",
+            "link": b"a",
+        }
+
+    def test_mount_leaves_out_a_directory_a_mount_makes(self):
+        from monkeyfs import MountFS
+
+        base = VirtualFS({})
+        base.write("/a", b"hidden by the mount below")
+        base.write("/top.txt", b"top")
+        mounted = VirtualFS({})
+        mounted.write("/c.txt", b"c")
+        fs = MountFS(base, {"/a/b": mounted})
+
+        assert not fs.isfile("/a")
+        assert fs.read_many(["/a", "/a/b", "/a/b/c.txt", "/top.txt"]) == {
+            "/a/b/c.txt": b"c",
+            "/top.txt": b"top",
+        }
+
     def test_mount_reads_a_filesystem_without_it_file_by_file(self):
         from monkeyfs import MountFS
 

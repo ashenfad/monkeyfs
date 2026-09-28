@@ -563,10 +563,15 @@ class IsolatedFS:
         paths that are files. A path that is not one is left out."""
         found: dict[str, bytes] = {}
         for path in paths:
+            # Regular files only (through a link, as ``isfile`` follows
+            # one): a socket cannot be read and a FIFO would block
+            # waiting for a writer.
+            if not self.isfile(path):
+                continue
             try:
                 found[path] = self.read(path)
             except (FileNotFoundError, IsADirectoryError, NotADirectoryError):
-                continue
+                continue  # gone between the check and the read
         return found
 
     def write_many(self, files: dict[str, bytes]) -> None:
