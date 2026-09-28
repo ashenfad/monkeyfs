@@ -162,7 +162,14 @@ OPTIONAL_WRITE_METHODS = frozenset(
 #: termish's shell over a filesystem. Not dispatched by any stdlib shim, but
 #: composable — a wrapper that routes by path can forward them.
 DIRECT_READ_METHODS = frozenset(
-    {"get_metadata_snapshot", "glob", "invalidate", "lexists", "list_detailed"}
+    {
+        "get_metadata_snapshot",
+        "glob",
+        "invalidate",
+        "lexists",
+        "list_detailed",
+        "read_many",
+    }
 )
 DIRECT_WRITE_METHODS = frozenset({"remove_many", "write_many"})
 

@@ -230,6 +230,7 @@ list_detailed(path=".", recursive=False) -> list[FileInfo]
 lexists(path) -> bool                       # os.path.lexists routes to exists()
 get_metadata_snapshot() -> dict[str, FileMetadata]
 invalidate() -> None
+read_many(paths) -> dict[str, bytes]      # files only; one get_many on VirtualFS
 write_many(files) -> None
 remove_many(paths) -> None
 ```

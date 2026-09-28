@@ -436,6 +436,7 @@ READING_METHODS = {
     "open",
     "path_for_metadata_key",
     "read",
+    "read_many",
     "readlink",
     "realpath",
     "resolve_path",
