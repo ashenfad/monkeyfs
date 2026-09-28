@@ -46,6 +46,8 @@ Useful for privileged functions that need host filesystem access while patching 
 
 In-memory virtual filesystem. `state` is any `MutableMapping[str, bytes]` -- a plain `dict`, a database-backed mapping, etc.
 
+A state may also offer `get_many(*keys)`, returning a mapping of the keys that exist to their values -- kvgit worktrees do. A scan that reads many keys (the metadata behind `list()`, `list_detailed()`, directory checks and the size limit) then asks for them in one call, which over a networked store is one round trip instead of one per file. A mapping without it is read key by key, as before.
+
 ```python
 vfs = VirtualFS({})
 vfs.write("file.txt", b"content")

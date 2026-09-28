@@ -707,3 +707,70 @@ class TestLegacyTableMigration:
         assert vfs.isdir("d")
         assert set(rows(state)) == {"d/a.txt"}
         assert set(legacy_table(state)) == {"d"}
+
+
+class BatchingState(dict):
+    """A dict that also answers ``get_many``, counting how it is read."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.gets: list[str] = []
+        self.batches: list[tuple[str, ...]] = []
+
+    def get(self, key, default=None):
+        self.gets.append(key)
+        return super().get(key, default)
+
+    def get_many(self, *keys):
+        self.batches.append(keys)
+        return {k: dict.__getitem__(self, k) for k in keys if k in self}
+
+
+def _tree(vfs):
+    vfs.mkdir("/empty")
+    for i in range(30):
+        vfs.write(f"/d{i % 3}/f{i}.txt", b"x" * i)
+
+
+class TestBatchedMetadataScan:
+    def test_a_scan_reads_every_row_in_one_call(self):
+        state = BatchingState()
+        _tree(VirtualFS(state))
+        state.gets.clear()
+
+        fresh = VirtualFS(state)  # nothing cached
+        fresh.list("/", recursive=True)
+
+        assert len(state.batches) == 1
+        assert set(state.batches[0]) == {
+            k for k in state if VirtualFS.is_metadata_key(k)
+        }
+        assert not [k for k in state.gets if VirtualFS.is_metadata_key(k)]
+
+    def test_a_batching_state_answers_as_a_plain_one_does(self):
+        plain: dict = {}
+        _tree(VirtualFS(plain))
+        batching = BatchingState(plain)
+
+        def listing(state):
+            vfs = VirtualFS(state)
+            return [
+                (info.path, info.size, info.is_dir)
+                for info in vfs.list_detailed("/", recursive=True)
+            ]
+
+        assert listing(batching) == listing(plain)
+        assert (
+            VirtualFS(batching)._get_current_size()
+            == VirtualFS(plain)._get_current_size()
+        )
+
+    def test_the_legacy_table_still_fills_paths_without_rows(self):
+        state = BatchingState(
+            _legacy_state({"/old.txt": _entry(3)}, blobs={"/old.txt": b"abc"})
+        )
+        vfs = VirtualFS(state)
+        vfs.write("/new.txt", b"hello")
+        fresh = VirtualFS(state)
+        assert fresh.stat("/old.txt").size == 3
+        assert {i.path for i in fresh.list_detailed("/")} == {"/old.txt", "/new.txt"}
