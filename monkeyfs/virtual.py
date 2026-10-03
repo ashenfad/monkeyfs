@@ -536,6 +536,18 @@ class VirtualFS:
         """
         return dict(self._meta_all())
 
+    @staticmethod
+    def _absolute(normalized: str) -> str:
+        """A normalized key as an absolute path, for handing back to a
+        method that resolves its argument.
+
+        ``resolve_path`` returns the key form, which has no leading
+        slash; passed on as it is, the next method reads it as relative
+        to the working directory and names a different path whenever
+        that is not ``/``.
+        """
+        return "/" + normalized.strip("/")
+
     def _normalize_path(self, path: str) -> str:
         """Normalize file path for consistent internal keys.
 
@@ -1094,11 +1106,12 @@ class VirtualFS:
         if parent and not self.isdir("/" + parent):
             raise FileNotFoundError(f"No such file or directory: '{path}'")
 
-        # Check if already exists
-        absolute = "/" + normalized
-        if self.isfile(path):
+        # Check if already exists (on the absolute path: ``path`` is the
+        # key form, and checked as it is it would resolve a second time)
+        absolute = self._absolute(normalized)
+        if self.isfile(absolute):
             raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), absolute)
-        if self.isdir(path):
+        if self.isdir(absolute):
             if exist_ok:
                 return
             raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), absolute)
@@ -1130,8 +1143,8 @@ class VirtualFS:
         """
         path = self.resolve_path(path)
 
-        if not exist_ok and self.isdir(path):
-            absolute = "/" + path.strip("/")
+        if not exist_ok and self.isdir(self._absolute(path)):
+            absolute = self._absolute(path)
             raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), absolute)
 
         parts = path.strip("/").split("/")
@@ -1157,16 +1170,19 @@ class VirtualFS:
         """
         path = self.resolve_path(path)
         normalized = self._normalize_path(path)
+        # Checked on the absolute path: ``path`` is the key form, and the
+        # checks resolve their argument again.
+        absolute = self._absolute(normalized)
 
-        if not self.exists(path):
-            raise FileNotFoundError(f"No such directory: {path}")
-        if self.isfile(path):
-            raise NotADirectoryError(f"Not a directory: {path}")
-        if not self.isdir(path):
-            raise FileNotFoundError(f"No such directory: {path}")
+        if not self.exists(absolute):
+            raise FileNotFoundError(f"No such directory: {absolute}")
+        if self.isfile(absolute):
+            raise NotADirectoryError(f"Not a directory: {absolute}")
+        if not self.isdir(absolute):
+            raise FileNotFoundError(f"No such directory: {absolute}")
 
         # Check if directory is empty
-        children = self.list(path)
+        children = self.list(absolute)
         if children:
             raise OSError(f"Directory not empty: {path}")
 

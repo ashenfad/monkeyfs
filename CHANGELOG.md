@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **`rmdir`, `mkdir` and `makedirs` work from any working directory** (#30). Each resolved its path and then handed the result, the key form with no leading slash, to checks that resolved it again, now relative to the working directory. From `/` the two agreed; from anywhere else they named a different path. With the working directory at `/workspace`, as it is in every nontainer session:
+  - `rmdir` refused an empty directory that exists ("No such directory"), so `rm -r` deleted a directory's files and left the directory behind.
+  - `mkdir` on an existing path succeeded silently. On a file, it wrote a directory row over the file's metadata, so the path read as both a file and a directory and listed as a directory.
+  - `makedirs(..., exist_ok=False)` missed an existing directory.
+
+  The checks now take the absolute path, and `rmdir`'s errors name it.
+
 ## [0.2.4] - 2026-09-28
 
 ### Added
