@@ -514,3 +514,63 @@ def test_isolatedfs_recursive_listing_names_are_basenames(tmp_path):
         ("sub", "/probe/sub"),
         ("two.txt", "/probe/sub/two.txt"),
     ]
+
+
+# -- a working directory other than / (issue #30) -------------------------
+#
+# rmdir, mkdir and makedirs resolved a path, then handed the result (the
+# key form, with no leading slash) to checks that resolved it again,
+# relative to the working directory. From / the two resolutions agreed;
+# from anywhere else they named different paths.
+
+
+@pytest.fixture(params=["/", "/workspace", "/workspace/src"])
+def cwd_fs(request):
+    fs = VirtualFS({})
+    fs.makedirs("/workspace/src/inner", exist_ok=True)
+    fs.write("/workspace/f.txt", b"data")
+    fs.chdir(request.param)
+    return fs
+
+
+def test_rmdir_removes_an_empty_directory_from_any_cwd(cwd_fs):
+    cwd_fs.rmdir("/workspace/src/inner")
+    assert not cwd_fs.exists("/workspace/src/inner")
+
+
+def test_rmdir_refuses_a_missing_directory_by_its_absolute_path(cwd_fs):
+    with pytest.raises(FileNotFoundError, match="/workspace/nope"):
+        cwd_fs.rmdir("/workspace/nope")
+
+
+def test_rmdir_refuses_a_file_from_any_cwd(cwd_fs):
+    with pytest.raises(NotADirectoryError):
+        cwd_fs.rmdir("/workspace/f.txt")
+
+
+def test_mkdir_refuses_an_existing_directory_from_any_cwd(cwd_fs):
+    with pytest.raises(FileExistsError):
+        cwd_fs.mkdir("/workspace/src")
+
+
+def test_mkdir_refuses_an_existing_file_and_leaves_it_a_file(cwd_fs):
+    with pytest.raises(FileExistsError):
+        cwd_fs.mkdir("/workspace/f.txt")
+    assert cwd_fs.isfile("/workspace/f.txt")
+    assert not cwd_fs.isdir("/workspace/f.txt")
+    assert cwd_fs.read("/workspace/f.txt") == b"data"
+
+
+def test_makedirs_without_exist_ok_refuses_an_existing_directory(cwd_fs):
+    with pytest.raises(FileExistsError):
+        cwd_fs.makedirs("/workspace/src", exist_ok=False)
+
+
+def test_a_relative_rmdir_and_mkdir_resolve_against_the_cwd():
+    fs = VirtualFS({})
+    fs.makedirs("/workspace/src", exist_ok=True)
+    fs.chdir("/workspace")
+    fs.mkdir("new")
+    assert fs.isdir("/workspace/new")
+    fs.rmdir("src")
+    assert not fs.exists("/workspace/src")
