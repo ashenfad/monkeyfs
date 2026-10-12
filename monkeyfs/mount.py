@@ -10,7 +10,8 @@ from __future__ import annotations
 import errno
 import os
 import posixpath
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
 
@@ -144,8 +145,9 @@ class MountFS:
             and self._is_mount_point(abs_path)
         )
 
-    def _resolve_to_create(self, path: str) -> tuple[Any, str]:
-        """Route a path something is about to be created at.
+    @contextmanager
+    def _implied_parents(self, *paths: str) -> Iterator[None]:
+        """Hold the implied directories that creates at ``paths`` land in.
 
         A file, directory or link created in an implied directory lands
         in the filesystem that owns the directory's path, which may not
@@ -153,14 +155,42 @@ class MountFS:
         namespace already promised it. Only an implied directory is
         made: a missing one that leads to no mount stays missing, and
         the create fails there as it would without the composition.
+
+        If the create raises, the directories made for it are removed
+        again, deepest first, so a failed call leaves the filesystem
+        underneath as it found it -- on a versioned base, that is the
+        difference between a failed call and a staged change. One that
+        is no longer empty by then stays: something did land in it. Only
+        a failure the call itself raises is seen; a handle that defers
+        its write to ``close()`` has been handed back by then, over a
+        path that exists.
         """
-        abs_path = self._to_absolute(path)
-        parent = posixpath.dirname(abs_path)
-        if abs_path not in self._mounts and self._is_implied_dir(parent):
-            fs, inner = self._resolve(parent)
-            if not fs.isdir(inner):
+        missing: list[str] = []
+        for path in paths:
+            abs_path = self._to_absolute(path)
+            if abs_path in self._mounts:
+                continue
+            probe = posixpath.dirname(abs_path)
+            while self._is_implied_dir(probe) and probe not in missing:
+                fs, inner = self._resolve(probe)
+                if fs.isdir(inner):
+                    break
+                missing.append(probe)
+                probe = posixpath.dirname(probe)
+        made_from_deepest = sorted(missing, key=lambda p: p.count("/"), reverse=True)
+        try:
+            for abs_dir in made_from_deepest:
+                fs, inner = self._resolve(abs_dir)
                 fs.makedirs(inner, exist_ok=True)
-        return self._resolve(abs_path)
+            yield
+        except BaseException:
+            for abs_dir in made_from_deepest:
+                fs, inner = self._resolve(abs_dir)
+                try:
+                    fs.rmdir(inner)
+                except OSError:
+                    pass
+            raise
 
     def _is_mount_point(self, abs_path: str) -> bool:
         """Check if abs_path is a mount prefix or an implicit parent of one."""
@@ -225,11 +255,12 @@ class MountFS:
         bytes-level filesystem does not make it unopenable.
         """
         creates = any(c in mode for c in "wax")
-        fs, inner = self._resolve_to_create(path) if creates else self._resolve(path)
-        backend_open = getattr(fs, "open", None)
-        if backend_open is not None:
-            return backend_open(inner, mode, **kwargs)
-        return open_file(fs, inner, mode, **kwargs)
+        with self._implied_parents(*([path] if creates else [])):
+            fs, inner = self._resolve(path)
+            backend_open = getattr(fs, "open", None)
+            if backend_open is not None:
+                return backend_open(inner, mode, **kwargs)
+            return open_file(fs, inner, mode, **kwargs)
 
     def read(self, path: str, offset: int = 0, size: int = -1) -> bytes:
         """Read bytes from the filesystem that owns ``path``, range and all.
@@ -356,7 +387,7 @@ class MountFS:
 
         An implied directory exists here whether or not the filesystem
         owning its path holds it, and what is created in it is made
-        there (see ``_resolve_to_create``). Where that filesystem lacks
+        there (see ``_implied_parents``). Where that filesystem lacks
         it, the nearest directory up the path that is real answers:
         that is what a caller asking "may I write here" before creating
         a file has to be told.
@@ -480,20 +511,22 @@ class MountFS:
     # -- Write operations --
 
     def write(self, path: str, content: bytes, mode: str = "w") -> None:
-        fs, inner = self._resolve_to_create(path)
-        fs.write(inner, content, mode=mode)
+        with self._implied_parents(path):
+            fs, inner = self._resolve(path)
+            fs.write(inner, content, mode=mode)
 
     def write_many(self, files: dict[str, bytes]) -> None:
         # Group by filesystem
         groups: dict[int, tuple[Any, dict[str, bytes]]] = {}
         for path, content in files.items():
-            fs, inner = self._resolve_to_create(path)
+            fs, inner = self._resolve(path)
             key = id(fs)
             if key not in groups:
                 groups[key] = (fs, {})
             groups[key][1][inner] = content
-        for fs, inner_files in groups.values():
-            fs.write_many(inner_files)
+        with self._implied_parents(*files):
+            for fs, inner_files in groups.values():
+                fs.write_many(inner_files)
 
     def remove(self, path: str) -> None:
         fs, inner = self._resolve(path)
@@ -512,8 +545,9 @@ class MountFS:
             fs.remove_many(inner_paths)
 
     def mkdir(self, path: str, **kwargs: Any) -> None:
-        fs, inner = self._resolve_to_create(path)
-        fs.mkdir(inner, **kwargs)
+        with self._implied_parents(path):
+            fs, inner = self._resolve(path)
+            fs.mkdir(inner, **kwargs)
 
     def makedirs(self, path: str, exist_ok: bool = True) -> None:
         fs, inner = self._resolve(path)
@@ -525,37 +559,42 @@ class MountFS:
 
     def rename(self, src: str, dst: str) -> None:
         src_fs, src_inner = self._resolve(src)
-        dst_fs, dst_inner = self._resolve_to_create(dst)
-        if src_fs is dst_fs:
-            src_fs.rename(src_inner, dst_inner)
-        else:
-            if src_fs.isdir(src_inner):
-                raise OSError(errno.EXDEV, "Cross-mount directory rename not supported")
-            content = src_fs.read(src_inner)
-            dst_fs.write(dst_inner, content)
-            src_fs.remove(src_inner)
+        dst_fs, dst_inner = self._resolve(dst)
+        with self._implied_parents(dst):
+            if src_fs is dst_fs:
+                src_fs.rename(src_inner, dst_inner)
+            else:
+                if src_fs.isdir(src_inner):
+                    raise OSError(
+                        errno.EXDEV, "Cross-mount directory rename not supported"
+                    )
+                content = src_fs.read(src_inner)
+                dst_fs.write(dst_inner, content)
+                src_fs.remove(src_inner)
 
     def replace(self, src: str, dst: str) -> None:
         src_fs, src_inner = self._resolve(src)
-        dst_fs, dst_inner = self._resolve_to_create(dst)
-        if src_fs is dst_fs:
-            src_fs.replace(src_inner, dst_inner)
-        else:
-            content = src_fs.read(src_inner)
-            dst_fs.write(dst_inner, content)
-            src_fs.remove(src_inner)
+        dst_fs, dst_inner = self._resolve(dst)
+        with self._implied_parents(dst):
+            if src_fs is dst_fs:
+                src_fs.replace(src_inner, dst_inner)
+            else:
+                content = src_fs.read(src_inner)
+                dst_fs.write(dst_inner, content)
+                src_fs.remove(src_inner)
 
     def symlink(self, src: str, dst: str) -> None:
-        fs, inner = self._resolve_to_create(dst)
-        fs.symlink(src, inner)
+        with self._implied_parents(dst):
+            fs, inner = self._resolve(dst)
+            fs.symlink(src, inner)
 
     def link(self, src: str, dst: str) -> None:
         src_fs, src_inner = self._resolve(src)
         dst_fs, dst_inner = self._resolve(dst)
         if src_fs is not dst_fs:
             raise OSError(errno.EXDEV, "Cross-mount link not supported")
-        self._resolve_to_create(dst)
-        src_fs.link(src_inner, dst_inner)
+        with self._implied_parents(dst):
+            src_fs.link(src_inner, dst_inner)
 
     def chmod(self, path: str, mode: int) -> None:
         fs, inner = self._resolve(path)

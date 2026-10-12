@@ -696,3 +696,53 @@ class TestImpliedDirectories:
         with fs.open("/workspace/a.txt", "w") as f:
             f.write("x")
         assert (tmp_path / "workspace" / "a.txt").read_text() == "x"
+
+    def test_a_failed_rename_leaves_the_base_as_it_was(self):
+        base, fs = self._composed()
+        with pytest.raises(FileNotFoundError):
+            fs.rename("/missing", "/workspace/new")
+        assert not base.exists("workspace")
+
+    def test_a_refused_cross_mount_rename_leaves_the_base_as_it_was(self):
+        base = VirtualFS()
+        outer = VirtualFS()
+        outer.makedirs("tree")
+        fs = MountFS(
+            base, {"/outer": outer, "/workspace/docs": ReadOnlyFS(VirtualFS())}
+        )
+        with pytest.raises(OSError) as raised:
+            fs.rename("/outer/tree", "/workspace/tree")
+        assert raised.value.errno == errno.EXDEV
+        assert not base.exists("workspace")
+
+    def test_an_invalid_open_mode_leaves_the_base_as_it_was(self, tmp_path):
+        _, fs = self._composed(base=IsolatedFS(str(tmp_path)))
+        with pytest.raises(ValueError):
+            fs.open("/workspace/a.txt", "wq")
+        assert not (tmp_path / "workspace").exists()
+
+    def test_every_level_made_for_a_failed_create_is_removed(self):
+        base, fs = self._composed(mounts=("/workspace/inputs/docs",))
+        with pytest.raises(FileNotFoundError):
+            fs.rename("/missing", "/workspace/inputs/new")
+        assert not base.exists("workspace")
+
+    def test_a_directory_something_landed_in_stays(self):
+        class Partial(VirtualFS):
+            def write_many(self, files):
+                first, *_ = files
+                self.write(first, files[first])
+                raise OSError(errno.ENOSPC, "full")
+
+        base = Partial()
+        fs = MountFS(base, {"/workspace/docs": ReadOnlyFS(VirtualFS())})
+        with pytest.raises(OSError):
+            fs.write_many({"/workspace/a.txt": b"a", "/workspace/b.txt": b"b"})
+        assert base.read("workspace/a.txt") == b"a"
+
+    def test_a_directory_the_base_already_held_is_never_removed(self):
+        base, fs = self._composed()
+        base.makedirs("workspace")
+        with pytest.raises(FileNotFoundError):
+            fs.rename("/missing", "/workspace/new")
+        assert base.isdir("workspace")
