@@ -600,3 +600,99 @@ class TestNestedMountListing:
             "missing/deep",
             "missing/deep/leaf.txt",
         ]
+
+
+class TestImpliedDirectories:
+    """A directory the composition shows on the way to a mount takes
+    creates, whether or not the filesystem owning its path holds it."""
+
+    @staticmethod
+    def _composed(mounts=("/workspace/docs",), base=None):
+        base = VirtualFS() if base is None else base
+        docs = VirtualFS()
+        docs.write("README.md", b"reference")
+        return base, MountFS(base, {m: ReadOnlyFS(docs) for m in mounts})
+
+    def test_open_for_write_in_an_implied_directory(self):
+        base, fs = self._composed()
+        assert fs.isdir("/workspace") and not base.isdir("workspace")
+        with fs.open("/workspace/a.txt", "w") as f:
+            f.write("x")
+        assert base.isdir("workspace")
+        assert base.read("workspace/a.txt") == b"x"
+
+    def test_patched_open_in_an_implied_directory(self):
+        base, fs = self._composed()
+        with patch(fs):
+            with open("/workspace/a.txt", "w") as f:
+                f.write("x")
+            with open("/workspace/b.bin", "xb") as f:
+                f.write(b"y")
+            with open("/workspace/c.txt", "a") as f:
+                f.write("z")
+        assert base.read("workspace/a.txt") == b"x"
+        assert base.read("workspace/b.bin") == b"y"
+        assert base.read("workspace/c.txt") == b"z"
+
+    def test_write_mkdir_and_rename_into_an_implied_directory(self):
+        base, fs = self._composed()
+        fs.mkdir("/workspace/sub")
+        assert base.isdir("workspace/sub")
+
+        base2, fs2 = self._composed()
+        fs2.write("/workspace/w.txt", b"w")
+        assert base2.read("workspace/w.txt") == b"w"
+
+        base3, fs3 = self._composed()
+        fs3.write("/top.txt", b"t")
+        fs3.rename("/top.txt", "/workspace/moved.txt")
+        assert base3.read("workspace/moved.txt") == b"t"
+
+    def test_every_implied_level_takes_a_create(self):
+        base, fs = self._composed(mounts=("/workspace/inputs/docs",))
+        fs.write("/workspace/a.txt", b"a")
+        with fs.open("/workspace/inputs/b.txt", "w") as f:
+            f.write("b")
+        assert base.read("workspace/a.txt") == b"a"
+        assert base.read("workspace/inputs/b.txt") == b"b"
+
+    def test_an_implied_directory_inside_a_mount(self):
+        outer = VirtualFS()
+        deep = VirtualFS()
+        deep.write("leaf.txt", b"x")
+        fs = MountFS(VirtualFS(), {"/a": outer, "/a/missing/deep": deep})
+        with fs.open("/a/missing/new.txt", "w") as f:
+            f.write("n")
+        assert outer.read("missing/new.txt") == b"n"
+
+    def test_a_missing_directory_leading_to_no_mount_stays_missing(self):
+        base, fs = self._composed()
+        with pytest.raises(FileNotFoundError):
+            fs.open("/workspace/new/b.txt", "w")
+        assert not base.exists("workspace/new")
+
+    def test_a_read_leaves_the_base_alone(self):
+        base, fs = self._composed()
+        with pytest.raises(FileNotFoundError):
+            fs.open("/workspace/a.txt", "r")
+        assert fs.access("/workspace", os.W_OK)
+        assert not base.exists("workspace")
+
+    def test_access_answers_for_where_a_create_lands(self):
+        _, fs = self._composed(mounts=("/workspace/inputs/docs",))
+        for path in ("/workspace", "/workspace/inputs"):
+            assert fs.access(path, os.F_OK)
+            assert fs.access(path, os.W_OK)
+        assert not fs.access("/workspace/inputs/docs", os.W_OK)
+
+    def test_a_read_only_base_refuses_the_create(self):
+        _, fs = self._composed(base=ReadOnlyFS(VirtualFS()))
+        assert not fs.access("/workspace", os.W_OK)
+        with pytest.raises(PermissionError):
+            fs.open("/workspace/a.txt", "w")
+
+    def test_an_isolated_base_gets_a_real_directory(self, tmp_path):
+        base, fs = self._composed(base=IsolatedFS(str(tmp_path)))
+        with fs.open("/workspace/a.txt", "w") as f:
+            f.write("x")
+        assert (tmp_path / "workspace" / "a.txt").read_text() == "x"
