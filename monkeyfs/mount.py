@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import errno
 import os
+import posixpath
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import Any
@@ -128,6 +129,39 @@ class MountFS:
         base_path = abs_path.lstrip("/") or "/"
         return self._base, base_path
 
+    def _is_implied_dir(self, abs_path: str) -> bool:
+        """Whether abs_path is a directory on the way to a mount prefix.
+
+        The composition shows every such directory, whether the
+        filesystem that owns its path holds it or not -- ``isdir`` says
+        yes to ``/workspace`` with only ``/workspace/data`` mounted. A
+        mount prefix is not one (its filesystem's root answers for it),
+        and neither is ``/``.
+        """
+        return (
+            abs_path != "/"
+            and abs_path not in self._mounts
+            and self._is_mount_point(abs_path)
+        )
+
+    def _resolve_to_create(self, path: str) -> tuple[Any, str]:
+        """Route a path something is about to be created at.
+
+        A file, directory or link created in an implied directory lands
+        in the filesystem that owns the directory's path, which may not
+        hold it. That filesystem is given the directory first, as the
+        namespace already promised it. Only an implied directory is
+        made: a missing one that leads to no mount stays missing, and
+        the create fails there as it would without the composition.
+        """
+        abs_path = self._to_absolute(path)
+        parent = posixpath.dirname(abs_path)
+        if abs_path not in self._mounts and self._is_implied_dir(parent):
+            fs, inner = self._resolve(parent)
+            if not fs.isdir(inner):
+                fs.makedirs(inner, exist_ok=True)
+        return self._resolve(abs_path)
+
     def _is_mount_point(self, abs_path: str) -> bool:
         """Check if abs_path is a mount prefix or an implicit parent of one."""
         norm = abs_path.rstrip("/") if abs_path != "/" else ""
@@ -190,7 +224,8 @@ class MountFS:
         synthesized over its ``read()``/``write()``, so mounting a
         bytes-level filesystem does not make it unopenable.
         """
-        fs, inner = self._resolve(path)
+        creates = any(c in mode for c in "wax")
+        fs, inner = self._resolve_to_create(path) if creates else self._resolve(path)
         backend_open = getattr(fs, "open", None)
         if backend_open is not None:
             return backend_open(inner, mode, **kwargs)
@@ -317,7 +352,22 @@ class MountFS:
         return result
 
     def access(self, path: str, mode: int) -> bool:
-        fs, inner = self._resolve(path)
+        """Answer ``os.access()`` for where a create at ``path`` would land.
+
+        An implied directory exists here whether or not the filesystem
+        owning its path holds it, and what is created in it is made
+        there (see ``_resolve_to_create``). Where that filesystem lacks
+        it, the nearest directory up the path that is real answers:
+        that is what a caller asking "may I write here" before creating
+        a file has to be told.
+        """
+        probe = self._to_absolute(path)
+        while self._is_implied_dir(probe):
+            fs, inner = self._resolve(probe)
+            if fs.isdir(inner):
+                break
+            probe = posixpath.dirname(probe)
+        fs, inner = self._resolve(probe)
         return fs.access(inner, mode)
 
     def getsize(self, path: str) -> int:
@@ -430,14 +480,14 @@ class MountFS:
     # -- Write operations --
 
     def write(self, path: str, content: bytes, mode: str = "w") -> None:
-        fs, inner = self._resolve(path)
+        fs, inner = self._resolve_to_create(path)
         fs.write(inner, content, mode=mode)
 
     def write_many(self, files: dict[str, bytes]) -> None:
         # Group by filesystem
         groups: dict[int, tuple[Any, dict[str, bytes]]] = {}
         for path, content in files.items():
-            fs, inner = self._resolve(path)
+            fs, inner = self._resolve_to_create(path)
             key = id(fs)
             if key not in groups:
                 groups[key] = (fs, {})
@@ -462,7 +512,7 @@ class MountFS:
             fs.remove_many(inner_paths)
 
     def mkdir(self, path: str, **kwargs: Any) -> None:
-        fs, inner = self._resolve(path)
+        fs, inner = self._resolve_to_create(path)
         fs.mkdir(inner, **kwargs)
 
     def makedirs(self, path: str, exist_ok: bool = True) -> None:
@@ -475,7 +525,7 @@ class MountFS:
 
     def rename(self, src: str, dst: str) -> None:
         src_fs, src_inner = self._resolve(src)
-        dst_fs, dst_inner = self._resolve(dst)
+        dst_fs, dst_inner = self._resolve_to_create(dst)
         if src_fs is dst_fs:
             src_fs.rename(src_inner, dst_inner)
         else:
@@ -487,7 +537,7 @@ class MountFS:
 
     def replace(self, src: str, dst: str) -> None:
         src_fs, src_inner = self._resolve(src)
-        dst_fs, dst_inner = self._resolve(dst)
+        dst_fs, dst_inner = self._resolve_to_create(dst)
         if src_fs is dst_fs:
             src_fs.replace(src_inner, dst_inner)
         else:
@@ -496,7 +546,7 @@ class MountFS:
             src_fs.remove(src_inner)
 
     def symlink(self, src: str, dst: str) -> None:
-        fs, inner = self._resolve(dst)
+        fs, inner = self._resolve_to_create(dst)
         fs.symlink(src, inner)
 
     def link(self, src: str, dst: str) -> None:
@@ -504,6 +554,7 @@ class MountFS:
         dst_fs, dst_inner = self._resolve(dst)
         if src_fs is not dst_fs:
             raise OSError(errno.EXDEV, "Cross-mount link not supported")
+        self._resolve_to_create(dst)
         src_fs.link(src_inner, dst_inner)
 
     def chmod(self, path: str, mode: int) -> None:

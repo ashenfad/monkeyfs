@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **A file can be created in a directory `MountFS` shows on the way to a mount** (ashenfad/nontainer#236). With only `/workspace/docs` mounted, `isdir("/workspace")` and `exists("/workspace")` say yes, because the composition shows every directory leading to a mount prefix. But a create there was handed to the base, which might not hold the directory. So `open("/workspace/a.txt", "w")` raised `FileNotFoundError`, and `access("/workspace", os.W_OK)` said no, which made a caller that checks before writing (sandtrap's process sandbox) refuse the write outright. Creating a file, directory or link in such a directory now makes the directory first in the filesystem that owns its path, whether that's the base or an outer mount. This covers `open` in a `w`, `a` or `x` mode, `write`, `write_many`, `mkdir`, and the destination of `rename`, `replace`, `symlink` and `link`. `access` on such a directory answers for the nearest real directory above it, which is where the create would land. A missing directory that leads to no mount stays missing, and a create in it fails as before. A read-only base still refuses the create.
+
 ## [0.2.5] - 2026-10-03
 
 ### Fixed
