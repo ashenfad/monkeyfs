@@ -332,6 +332,22 @@ RENAMES = {
 }
 
 
+# Where the host kernels themselves disagree, VirtualFS gives one answer on
+# every platform, and IsolatedFS (os.rename) may give any of the hosts'.
+# Each entry: VirtualFS's answer, and every answer a host gives.
+HOST_DIVERGENCES = {
+    # rename(2) says a file onto a directory is EISDIR, and macOS answers
+    # that. Linux checks the directory for emptiness first, and this one
+    # holds the file being moved, so it answers ENOTEMPTY. VirtualFS keeps
+    # EISDIR: it is the answer POSIX names, and the one every other file
+    # onto a directory gets on both hosts.
+    "file onto its own directory": (
+        (IsADirectoryError, errno.EISDIR),
+        {(IsADirectoryError, errno.EISDIR), (OSError, errno.ENOTEMPTY)},
+    ),
+}
+
+
 class TestRenameMatchesIsolatedFS:
     @pytest.mark.parametrize("case", list(RENAMES))
     def test_rename(self, case, tmp_path):
@@ -343,10 +359,18 @@ class TestRenameMatchesIsolatedFS:
             files = {name: fs.read(name) for name in _tree(fs) if fs.isfile(name)}
             results.append((raised, code, _tree(fs), files))
         virtual, isolated = results
-        assert virtual[0] is isolated[0], (case, virtual, isolated)
-        if virtual[1] is not None:
-            assert virtual[1] == isolated[1], (case, virtual, isolated)
+        if case in HOST_DIVERGENCES:
+            chosen, hosts = HOST_DIVERGENCES[case]
+            assert virtual[:2] == chosen, (case, virtual)
+            assert isolated[:2] in hosts, (case, isolated)
+        else:
+            assert virtual[0] is isolated[0], (case, virtual, isolated)
+            if virtual[1] is not None:
+                assert virtual[1] == isolated[1], (case, virtual, isolated)
         assert virtual[2:] == isolated[2:], (case, virtual, isolated)
+
+    def test_every_divergence_names_a_case(self):
+        assert set(HOST_DIVERGENCES) <= set(RENAMES)
 
     def test_the_errors_rename_2_names(self):
         """Checked by errno as well: OSError carries ENOTEMPTY and EINVAL."""

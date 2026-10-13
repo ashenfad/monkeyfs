@@ -1270,6 +1270,10 @@ class VirtualFS:
         Follows rename(2), as ``os.rename`` does on ``IsolatedFS``: a file
         replaces a file, and a directory replaces an empty directory. A
         missing parent of ``dst`` is created, as ``write`` creates one.
+        The answers are the same on every platform. Where the hosts
+        differ, the one POSIX names is used: a file onto the directory
+        that holds it is ``IsADirectoryError``, as on macOS, where Linux
+        checks the directory for emptiness first and raises ENOTEMPTY.
 
         Raises:
             FileNotFoundError: If source doesn't exist.
