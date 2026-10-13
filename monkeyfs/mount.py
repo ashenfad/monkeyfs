@@ -16,6 +16,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
 
+from ._globbing import glob_from_list as _glob_from_list
+from ._globbing import segments_match as _segments_match
 from .base import FileInfo, FileMetadata
 from .virtualfile import open_file
 
@@ -124,66 +126,6 @@ def _access_from_exists(fs: Any, path: str, mode: int) -> bool:
     return fs.exists(path)
 
 
-_WILDCARDS = frozenset("*?[")
-
-
-def _glob_from_list(fs: Any, pattern: str) -> list[str]:
-    """Match an absolute ``pattern`` against what ``list()`` reports.
-
-    The semantics are ``pathlib``'s, as ``IsolatedFS`` answers on Python
-    3.13 and later, so a mount over a host directory and a mount over an
-    object agree: ``*``, ``?`` and ``[...]`` match within one path segment,
-    a ``**`` segment matches zero or more directories (a trailing one
-    matches everything below, the directory itself included), hidden
-    names match like any other, and directories match as well as files.
-
-    Only the pattern's fixed leading directory -- everything before the
-    first segment with a wildcard -- is listed, recursively, so
-    ``/data/2024/*.csv`` walks ``/data/2024`` and nothing else.
-    """
-    parts = [part for part in pattern.split("/") if part]
-    fixed: list[str] = []
-    for part in parts:
-        if _WILDCARDS.intersection(part):
-            break
-        fixed.append(part)
-    root = "/" + "/".join(fixed)
-    if len(fixed) == len(parts):
-        return [root] if fs.exists(root) else []
-    if not fs.isdir(root):
-        return []
-
-    rest = parts[len(fixed) :]
-    base = root.rstrip("/")
-    found = [
-        f"{base}/{entry}"
-        for entry in fs.list(root, recursive=True)
-        if _segments_match(rest, entry.split("/"))
-    ]
-    # A pattern of only ``**`` below the fixed directory matches that
-    # directory too, as pathlib's does -- unless it is the root, which
-    # has no name to report.
-    if root != "/" and _segments_match(rest, []):
-        found.append(root)
-    return sorted(found)
-
-
-def _segments_match(pattern: list[str], parts: list[str]) -> bool:
-    """Whether path segments ``parts`` match pattern segments ``pattern``."""
-    if not pattern:
-        return not parts
-    head, tail = pattern[0], pattern[1:]
-    if head == "**":
-        while tail and tail[0] == "**":
-            tail = tail[1:]
-        return any(_segments_match(tail, parts[i:]) for i in range(len(parts) + 1))
-    return (
-        bool(parts)
-        and fnmatch.fnmatchcase(parts[0], head)
-        and _segments_match(tail, parts[1:])
-    )
-
-
 def _patterns_below(pattern: list[str], prefix: list[str]) -> set[tuple[str, ...]]:
     """What a mount at ``prefix`` is asked for, given a glob ``pattern``.
 
@@ -194,11 +136,13 @@ def _patterns_below(pattern: list[str], prefix: list[str]) -> set[tuple[str, ...
     the mount's share, relative to its root: an empty one means the
     mount's root itself matches. A ``**`` still open when the prefix ends
     carries into the mount as ``**``, and its zero-length match is handed
-    over explicitly as well, so a mount whose own ``glob`` needs a
-    directory for a ``**`` (``VirtualFS``'s does) still answers for the
-    files at its root. Adjacent ``**`` segments are one ``**``, as they
-    are in pathlib, so the mount is not asked for one directory per
-    ``**`` either. A pattern that cannot reach the prefix gives nothing.
+    over explicitly as well. That is what names the mount's root for a
+    trailing ``**``, and it lets a mount whose own ``glob`` needs a
+    directory for a ``**`` still answer for the files at its root: every
+    backend in monkeyfs matches zero directories itself (#38), but one
+    that runs ``fnmatch`` over whole paths would not. Adjacent ``**``
+    segments are one ``**``, as they are in pathlib, so the mount is not
+    asked for one directory per ``**`` either. A pattern that cannot reach the prefix gives nothing.
     """
     collapsed: list[str] = []
     for part in pattern:
@@ -870,9 +814,8 @@ class MountFS:
         holding them -- a mount's root, and every directory on the way to
         one -- match with those segment semantics too, as ``list()``
         shows them. Each backend matches its own content with its own
-        ``glob``: ``IsolatedFS`` and the fallback by segments, and
-        ``VirtualFS`` by ``fnmatch`` over the whole path, where ``*``
-        crosses ``/`` and no directory matches.
+        ``glob``; ``IsolatedFS``, ``VirtualFS`` and the fallback all match
+        by segment.
         """
         abs_pattern = self._to_absolute(pattern)
         parts = [part for part in abs_pattern.split("/") if part]
