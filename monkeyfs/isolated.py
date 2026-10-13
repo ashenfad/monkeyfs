@@ -90,10 +90,12 @@ class IsolatedFS:
                 search_path = self.root
                 search_pattern = pattern.lstrip("/")
             else:
-                # Relative pattern: relative to CWD
+                # Relative pattern: relative to CWD. The cwd goes in absolute:
+                # stripped of its slash, _validate_path would join it onto
+                # the cwd a second time (#39).
                 cwd = self.getcwd()  # e.g. /src
                 # e.g. root/src
-                search_path = self._validate_path(cwd.lstrip("/"))
+                search_path = self._validate_path(cwd)
                 search_pattern = pattern
 
             try:
@@ -112,7 +114,10 @@ class IsolatedFS:
                         # Convert absolute virtual to relative to CWD
                         # e.g. /src/foo.py, cwd=/src -> foo.py
                         cwd = self.getcwd()
-                        if virtual.startswith(cwd):
+                        if virtual == cwd:
+                            # The cwd itself, which a ``**`` matches.
+                            results.append(".")
+                        elif virtual.startswith(cwd):
                             if cwd == "/":
                                 results.append(virtual.lstrip("/"))
                             else:
