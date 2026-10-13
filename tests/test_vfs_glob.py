@@ -18,6 +18,8 @@ import pytest
 
 from monkeyfs import IsolatedFS, MountFS, VirtualFS
 
+from .test_mount_optional import MinimalFS
+
 TREE = {
     "/test_top.py": b"",
     "/x.py": b"",
@@ -59,6 +61,28 @@ ABSOLUTE = [
         ],
     ),
     ("/src/pkg/**", ["/src/pkg", "/src/pkg/test_b.py", "/src/pkg/x.py"]),
+    # A segment before a trailing ** names a directory, never a file.
+    (
+        "/*/**",
+        [
+            "/.hidden",
+            "/.hidden/x.py",
+            "/a",
+            "/a/b",
+            "/empty",
+            "/src",
+            "/src/.env",
+            "/src/pkg",
+            "/src/pkg/test_b.py",
+            "/src/pkg/x.py",
+            "/src/test_a.py",
+            "/src/x.py",
+        ],
+    ),
+    ("/src/*/**", ["/src/pkg", "/src/pkg/test_b.py", "/src/pkg/x.py"]),
+    ("/*.py/**", []),
+    ("/**/x.py/**", []),
+    ("/**/*/**/b/**", []),
     ("/?", ["/a"]),
     ("/a/?", ["/a/b"]),
     ("/src/?.py", ["/src/x.py"]),
@@ -76,7 +100,15 @@ ABSOLUTE = [
     ("/nope", []),
     ("/x.py/*", []),
 ]
-TRAILING = {"/src/**", "/src/pkg/**"}
+TRAILING = {
+    "/src/**",
+    "/src/pkg/**",
+    "/*/**",
+    "/src/*/**",
+    "/*.py/**",
+    "/**/x.py/**",
+    "/**/*/**/b/**",
+}
 
 #: (cwd, relative pattern, answer)
 RELATIVE = [
@@ -97,6 +129,7 @@ RELATIVE = [
     ),
     ("/src/pkg", "**", [".", "test_b.py", "x.py"]),
     ("/", "a/**", ["a", "a/b"]),
+    ("/src", "*/**", ["pkg", "pkg/test_b.py", "pkg/x.py"]),
 ]
 
 
@@ -198,6 +231,23 @@ class TestAgainstIsolatedFS:
         assert virtual.glob(pattern) == sorted(
             posixpath.relpath(path, cwd) for path in absolute
         )
+
+
+class TestTheFallbackForAMountWithoutGlob:
+    """``MountFS`` answers from the same matcher for a mount with no
+    ``glob``, so the same patterns give the same answers there."""
+
+    @pytest.mark.parametrize(
+        "pattern, expected",
+        [
+            ("/m/*/**", ["/m/a", "/m/a/b", "/m/src", "/m/src/x.py"]),
+            ("/m/*.py/**", []),
+            ("/m/**", ["/m", "/m/a", "/m/a/b", "/m/src", "/m/src/x.py", "/m/x.py"]),
+        ],
+    )
+    def test_a_trailing_double_star(self, pattern, expected):
+        mounted = MinimalFS({"/x.py": b"", "/src/x.py": b"", "/a/b": b""})
+        assert MountFS(VirtualFS({}), {"/m": mounted}).glob(pattern) == expected
 
 
 class TestUnderMountFS:
