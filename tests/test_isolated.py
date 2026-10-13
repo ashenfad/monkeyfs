@@ -561,6 +561,211 @@ class TestIsolatedGlob:
 
 
 # ---------------------------------------------------------------------------
+# Staying inside the root: glob, listings and links
+# ---------------------------------------------------------------------------
+
+# Every name that would show the host outside the root: the root's
+# sibling directory and what is in it, a file beside the root, and the
+# root's own directory name.
+_OUTSIDE_NAMES = ("OUTSIDE", "SECRET", "jail-root")
+
+
+def _leaks(results):
+    return [r for r in results if any(name in r for name in _OUTSIDE_NAMES)]
+
+
+@pytest.fixture
+def jail(tmp_path):
+    """A root with links out of it, and recognisable names beside it.
+
+    tmp_path/
+      SIBLING-SECRET.txt
+      OUTSIDE-dir/SECRET.txt
+      jail-root/            <- the IsolatedFS root
+        a/f.txt, a/b/
+        a/b/up2 -> ../..    (the root itself: inside)
+        inner -> a          (inside)
+        out -> OUTSIDE-dir  (absolute, outside)
+        up -> tmp_path      (absolute, the root's parent)
+        dotdot -> ..        (relative, the root's parent)
+        loop -> loop
+    """
+    host = tmp_path.resolve()
+    (host / "SIBLING-SECRET.txt").write_text("sibling")
+    outside = host / "OUTSIDE-dir"
+    outside.mkdir()
+    (outside / "SECRET.txt").write_text("secret")
+    root = host / "jail-root"
+    (root / "a" / "b").mkdir(parents=True)
+    (root / "a" / "f.txt").write_text("f")
+    (root / "a" / "b" / "up2").symlink_to("../..")
+    (root / "inner").symlink_to("a")
+    (root / "out").symlink_to(outside)
+    (root / "up").symlink_to(host)
+    (root / "dotdot").symlink_to("..")
+    (root / "loop").symlink_to(root / "loop")
+    return IsolatedFS(str(root))
+
+
+_ROOT_NAMES = ["a", "dotdot", "inner", "loop", "out", "up"]
+
+
+class TestIsolatedGlobStaysInsideRoot:
+    """glob never names a path outside the root.
+
+    ``..`` above the root is refused, as ``list()`` and every other method
+    refuse it through ``_validate_path``, so a pattern that climbs there
+    matches nothing. A link out of the root is listed, as ``list()`` lists
+    it, but never searched, as ``list()`` refuses to list it.
+    """
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            "/../*",
+            "../*",
+            "/..",
+            "..",
+            "/../..",
+            "../..",
+            "/../../*",
+            "/a/../../*",
+            "a/../../*",
+            "/a/b/../../../*",
+            "/../jail-root/*",
+            "/../jail-root",
+            "/out/*",
+            "/out/**",
+            "/up/*",
+            "/up/*/*",
+            "/up/jail-root/*",
+            "/dotdot/*",
+            "/dotdot/jail-root/a",
+            "/a/b/up2/../*",
+            "/inner/b/up2/..",
+            "/loop/*",
+            "/out/..",
+            "/out/../*",
+        ],
+    )
+    def test_a_pattern_out_of_the_root_matches_nothing(self, jail, pattern):
+        assert jail.glob(pattern) == []
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            "/*/*",
+            "*/*",
+            "/*/*/*",
+            "/*/../*",
+            "/**/../*",
+            "/**/*/..",
+            "/*/**",
+            "/**",
+            "**",
+            "/**/*",
+            "/**/SECRET*",
+            "/*/../../*",
+            "/**/../../*",
+            "*/../../*",
+            "/*/../jail-root/*",
+        ],
+    )
+    def test_wildcards_never_reach_out_of_the_root(self, jail, pattern):
+        assert _leaks(jail.glob(pattern)) == []
+
+    def test_a_link_out_of_the_root_is_listed_but_not_searched(self, jail):
+        """As list() treats it: named among its siblings, never listed."""
+        assert jail.glob("/*") == ["/" + name for name in jail.list("/")]
+        assert jail.glob("/*") == ["/" + name for name in _ROOT_NAMES]
+        assert jail.glob("/*/*") == [
+            "/a/b",
+            "/a/f.txt",
+            "/inner/b",
+            "/inner/f.txt",
+        ]
+
+    def test_dotdot_inside_the_root_still_matches(self, jail):
+        assert jail.glob("/a/../*") == ["/a/../" + n for n in _ROOT_NAMES]
+        assert jail.glob("/a/b/../f.txt") == ["/a/b/../f.txt"]
+        # Through a link inside the root, .. is the link target's parent,
+        # as the kernel and _validate_path resolve it.
+        assert jail.glob("/inner/b/..") == ["/inner/b/.."]
+        assert jail.glob("/*/../*") == sorted(
+            f"/{d}/../{n}" for d in ("a", "inner") for n in _ROOT_NAMES
+        )
+
+    def test_a_link_back_into_the_root_is_searched(self, jail):
+        assert jail.glob("/a/b/up2/*") == ["/a/b/up2/" + n for n in _ROOT_NAMES]
+        assert jail.glob("/inner/*") == ["/inner/b", "/inner/f.txt"]
+
+    def test_relative_patterns_from_a_nested_cwd(self, jail):
+        jail.chdir("/a/b")
+        assert jail.glob("../*") == ["../b", "../f.txt"]
+        assert jail.glob("../../*") == ["../../" + n for n in _ROOT_NAMES]
+        assert jail.glob("../../../*") == []
+        assert jail.glob("../../..") == []
+        assert jail.glob("../../out/*") == []
+        assert jail.glob("up2/../*") == []
+        assert _leaks(jail.glob("../../*/*")) == []
+
+    def test_a_host_path_is_a_path_inside_the_root(self, jail, tmp_path):
+        host = tmp_path.resolve()
+        assert jail.glob(f"{host}/*") == []
+        assert jail.glob(f"{host}/OUTSIDE-dir/*") == []
+
+
+class TestIsolatedListingsStayInsideRoot:
+    """Detailed listings report what stat() reports, and nothing outside."""
+
+    def test_list_detailed_leaves_out_a_link_out_of_the_root(self, jail):
+        """stat() refuses such a link, so it has no details to give.
+
+        It used to report the target's: is_dir, size and times of a
+        file outside the root.
+        """
+        listed = jail.list_detailed("/")
+        assert [info.path for info in listed] == ["/a", "/inner"]
+        listed = jail.list_detailed("/", recursive=True)
+        assert _leaks([info.path for info in listed]) == []
+        assert "/out" not in [info.path for info in listed]
+
+    def test_list_detailed_leaves_out_a_dangling_link(self, jail):
+        """It raised FileNotFoundError, naming the root's host path."""
+        jail.symlink("/nowhere", "/dangling")
+        assert "/dangling" not in [info.path for info in jail.list_detailed("/")]
+
+    def test_metadata_snapshot_leaves_out_links_out_of_the_root(self, jail):
+        jail.symlink("/nowhere", "/dangling")
+        snapshot = jail.get_metadata_snapshot()
+        assert sorted(snapshot) == sorted(
+            ["a", "a/b", "a/f.txt", "inner", os.path.join("a", "b", "up2")]
+        )
+
+
+class TestIsolatedLinksStayInsideRoot:
+    def test_readlink_refuses_an_absolute_target_climbing_out(self, jail, tmp_path):
+        """Spelled from inside the root, but naming a path outside it."""
+        root = tmp_path.resolve() / "jail-root"
+        (root / "sneak").symlink_to(f"{root}/../OUTSIDE-dir")
+        (root / "via").symlink_to(f"{root}/out/SECRET.txt")
+        with pytest.raises(PermissionError, match="escapes sandbox"):
+            jail.readlink("/sneak")
+        with pytest.raises(PermissionError, match="escapes sandbox"):
+            jail.readlink("/via")
+
+    def test_lexists_and_islink_stop_at_the_root(self, jail):
+        """``/..`` is the root's parent on the host, not a path inside."""
+        assert jail.lexists("/..") is False
+        assert jail.lexists("/a/b/up2/..") is False
+        assert jail.islink("/..") is False
+
+    def test_lexists_the_root_itself(self, jail):
+        assert jail.lexists("/") is True
+        assert jail.islink("/") is False
+
+
+# ---------------------------------------------------------------------------
 # Path validation
 # ---------------------------------------------------------------------------
 

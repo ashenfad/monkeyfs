@@ -81,7 +81,14 @@ class IsolatedFS:
         self._cwd = "/" + resolved_virtual.lstrip("/") if resolved_virtual else "/"
 
     def glob(self, pattern: str) -> list[str]:
-        """Return list of paths matching a glob pattern."""
+        """Return list of paths matching a glob pattern.
+
+        Matching is pathlib's, and the search stays inside the root (see
+        ``_glob_inside``): a ``..`` above the root matches nothing, as
+        every other method refuses it, and a link out of the root matches
+        by its name but is never searched, as ``list()`` names it but
+        won't list it.
+        """
         with suspend():
             # Handle absolute/relative patterns
             if pattern.startswith("/"):
@@ -99,8 +106,7 @@ class IsolatedFS:
                 search_pattern = pattern
 
             try:
-                # Use list to consume generator
-                matches = list(search_path.glob(search_pattern))
+                matches = self._glob_inside(search_path, search_pattern)
 
                 # Convert matches back to virtual paths. Each match is the
                 # search root joined with what matched, e.g.
@@ -118,9 +124,78 @@ class IsolatedFS:
                         # cwd goes through a link.
                         results.append(str(m.relative_to(search_path)))
 
-                return sorted(results)
+                # Once each: a ``**`` before another wildcard and a ``**``
+                # can reach the same path both ways (``**/*/**``).
+                return sorted(set(results))
             except (OSError, ValueError):
                 return []
+
+    def _glob_inside(self, start: Path, pattern: str) -> list[Path]:
+        """Match ``pattern`` from ``start``, a directory inside the root,
+        without searching any directory outside it.
+
+        pathlib searches every directory a segment leads to, following a
+        ``..`` or a link wherever it goes, and the matches name what it
+        found there. So no segment that leads to a directory to search is
+        handed to it: those are walked here, keeping only directories that
+        resolve inside the root, with ``..`` taken as the kernel takes it,
+        from the directory before it. What is left of the pattern -- a run
+        of ``**`` and one last segment -- is pathlib's to match from each
+        directory kept. ``**`` doesn't follow links, so it stays below a
+        directory inside, and the last segment only names entries of the
+        directories it is matched in: a link out of the root is one, and
+        matches by its name, as ``list()`` names it.
+
+        A directory reached through a link out of the root and back in
+        (``/up/<root>/a``) is refused with the link, as is ``..`` above
+        the root even where a later name comes back in (``/../<root>``):
+        such a match would spell out where the root is on the host.
+        """
+        parts = [part for part in pattern.split("/") if part not in ("", ".")]
+        # A run of ``**`` matches what one does.
+        parts = [
+            part
+            for i, part in enumerate(parts)
+            if not (part == "**" and i and parts[i - 1] == "**")
+        ]
+        # Walked here: every segment through the last one that leads to a
+        # directory to search, and a final ``..``, which pathlib would take
+        # from whatever directory it names.
+        walked = 0
+        for i, part in enumerate(parts):
+            if part != "**" and (i < len(parts) - 1 or part == ".."):
+                walked = i + 1
+        if not walked:
+            return list(start.glob(pattern))
+
+        dirs = [start]
+        for part in parts[:walked]:
+            found: Iterable[Path]
+            if part == "..":
+                found = (d / ".." for d in dirs)
+            elif part == "**":
+                # Zero or more directories, not through links, as pathlib's
+                # ``**`` descends.
+                found = (Path(top) for d in dirs for top, _, _ in os.walk(d))
+            else:
+                found = (match for d in dirs for match in d.glob(part))
+            dirs = [d for d in found if d.is_dir() and self._resolves_inside(d)]
+
+        rest = "/".join(parts[walked:])
+        if not rest:
+            return dirs
+        if pattern.endswith("/"):
+            rest += "/"
+        return [match for d in dirs for match in d.glob(rest)]
+
+    def _resolves_inside(self, path: Path) -> bool:
+        """Whether ``path`` resolves inside the root, the check
+        ``_validate_path`` makes, as a yes or no."""
+        try:
+            Path(os.path.realpath(path)).relative_to(self.root)
+        except (OSError, ValueError):
+            return False
+        return True
 
     def resolve_path(self, path: str) -> str:
         """Resolve path (relative or absolute) against current working directory.
@@ -218,6 +293,13 @@ class IsolatedFS:
                     host_path = self.root / rel
             else:
                 host_path = self.root / p
+
+            # The root itself and a path ending in ".." have no name to keep
+            # unresolved: what they name is a directory, and it must resolve
+            # inside. Taken apart, the root's parent is outside it, and
+            # "/.." is the root's parent with a name of "..".
+            if host_path == self.root or host_path.name == "..":
+                return self._validate_path(path)
 
             # Resolve only the parent, keep the final component unresolved
             parent_resolved = host_path.parent.resolve()
@@ -477,17 +559,21 @@ class IsolatedFS:
         with suspend():
             unresolved = self._validate_path_no_follow(path)
             target = os.readlink(unresolved)
-            # Validate target stays within root
+            # The target must resolve inside the root, whichever way it is
+            # spelled: an absolute one under the root can still climb out
+            # of it with ".." or through a link (joining an absolute target
+            # onto the link's directory gives the target).
             target_path = Path(target)
+            escapes = PermissionError(f"Symlink target escapes sandbox: '{path}'")
+            if not self._resolves_inside(unresolved.parent / target_path):
+                raise escapes
             try:
                 if target_path.is_absolute():
                     inside = target_path.relative_to(self.root)
                 else:
-                    resolved_target = (unresolved.parent / target_path).resolve()
-                    resolved_target.relative_to(self.root)
                     inside = None
             except ValueError:
-                raise PermissionError(f"Symlink target escapes sandbox: '{path}'")
+                raise escapes
 
             if inside is None:
                 return target
@@ -535,12 +621,19 @@ class IsolatedFS:
             )
 
     def get_metadata_snapshot(self) -> dict[str, FileMetadata]:
-        """Get metadata for all files and directories by walking the root."""
+        """Get metadata for all files and directories by walking the root.
+
+        A link is in it with its target's metadata when ``stat()`` would
+        give that, and left out when ``stat()`` would refuse or fail: a
+        link out of the root, a dangling one, a loop.
+        """
         with suspend():
             result = {}
             for item in self.root.rglob("*"):
                 rel_path = str(item.relative_to(self.root))
-                st = item.stat()
+                st = self._stat_entry(item)
+                if st is None:
+                    continue
                 is_dir = item.is_dir()
                 result[rel_path] = FileMetadata(
                     size=st.st_size if not is_dir else 0,
@@ -599,6 +692,11 @@ class IsolatedFS:
         carries the host location of the root -- what comes back is a path
         this filesystem accepts back.
 
+        The details are what ``stat()`` reports, so an entry it has none
+        for is left out, as ``os.scandir()`` leaves it out under
+        ``patch()``: a link out of the root, whose target's details are
+        not this filesystem's to give, a dangling link, a loop.
+
         Args:
             path: Directory path to list.
             recursive: If True, list all nested items.
@@ -616,7 +714,9 @@ class IsolatedFS:
             for item in items:
                 relative = item.relative_to(resolved).as_posix()
                 display = f"{prefix}/{relative}" if prefix != "." else relative
-                stat_info = item.stat()
+                stat_info = self._stat_entry(item)
+                if stat_info is None:
+                    continue
 
                 result.append(
                     FileInfo(
@@ -634,3 +734,16 @@ class IsolatedFS:
                 )
 
         return sorted(result, key=lambda x: x.path)
+
+    def _stat_entry(self, item: Path) -> os.stat_result | None:
+        """``item.stat()`` for an entry of a directory inside the root, or
+        ``None`` where ``stat()`` would refuse or fail on it.
+
+        The directory is inside, so only a link can lead out of it.
+        """
+        if item.is_symlink() and not self._resolves_inside(item):
+            return None
+        try:
+            return item.stat()
+        except OSError:
+            return None
