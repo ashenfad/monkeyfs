@@ -569,11 +569,12 @@ class TestRowsAreNotFiles:
             "d/b.txt",
             "empty",
         ]
-        # fnmatch's "*" spans separators, which is glob()'s own behaviour;
-        # what matters here is that no metadata row is among the matches.
-        assert vfs.glob("*") == ["a.txt", "d/b.txt"]
+        # glob() matches by segment, directories included (#38); what
+        # matters here is that no metadata row is among the matches.
+        assert vfs.glob("*") == ["a.txt", "d", "empty"]
         assert vfs.glob("*/*") == ["d/b.txt"]
-        assert not [m for m in vfs.glob("*") if VirtualFS.is_metadata_key(m)]
+        assert vfs.glob("/**") == ["/a.txt", "/d", "/d/b.txt", "/empty"]
+        assert not [m for m in vfs.glob("**") if VirtualFS.is_metadata_key(m)]
 
     def test_a_row_is_not_a_file(self):
         vfs = VirtualFS({})

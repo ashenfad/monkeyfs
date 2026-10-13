@@ -23,6 +23,7 @@ from monkeyfs import IsolatedFS, MountFS, ReadOnlyFS, VirtualFS
 from monkeyfs.mount import _patterns_below
 
 from .test_mount_optional import ListCountingFS, MinimalFS
+from .test_vfs_glob import FnmatchGlobFS
 
 #: What the composition shows, by the filesystem that holds it.
 BASE = {
@@ -240,7 +241,7 @@ class TestNontainerTestDiscovery:
     def _discover(fs, base: str) -> set[str]:
         return set(fs.glob(f"{base}/test_*.py")) | set(fs.glob(f"{base}/**/test_*.py"))
 
-    @pytest.mark.parametrize("backing", ["isolated", "object", "virtual"])
+    @pytest.mark.parametrize("backing", ["isolated", "object", "virtual", "fnmatch"])
     @pytest.mark.parametrize("base", ["/workspace", "/workspace/docs", ""])
     def test_from_above_and_at_the_mount(self, tmp_path, backing, base):
         if backing == "isolated":
@@ -248,7 +249,7 @@ class TestNontainerTestDiscovery:
         elif backing == "object":
             mounted = ReadOnlyFS(MinimalFS(self.TESTS))
         else:
-            mounted = VirtualFS({})
+            mounted = VirtualFS({}) if backing == "virtual" else FnmatchGlobFS({})
             _write_all(mounted, self.TESTS)
         root = VirtualFS({})
         root.write("workspace/test_mine.py", b"")
@@ -266,8 +267,9 @@ class TestNontainerTestDiscovery:
 
 
 class TestAdjacentDoubleStars:
-    """``**/**`` means what ``**`` means. A ``VirtualFS`` mount's own glob
-    needs a directory per ``**``, so each depth has to reach it."""
+    """``**/**`` means what ``**`` means, in a mount as anywhere else. (A
+    mount whose own glob needs a directory per ``**`` is covered in
+    ``test_vfs_glob.py``.)"""
 
     @pytest.mark.parametrize(
         "pattern", ["/a/**/**/x", "/**/**/x", "/a/**/**/**/x", "/**/a/**/**/x"]

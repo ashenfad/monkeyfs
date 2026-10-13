@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import errno
-import fnmatch
 import io
 import json
 import os
@@ -12,6 +11,7 @@ from collections.abc import Iterable, MutableMapping
 from datetime import datetime, timezone
 from typing import Any
 
+from ._globbing import glob_from_list, segments_match
 from .base import FileInfo, FileMetadata
 from .virtualfile import LazyBinaryFile, VirtualFile, open_file
 
@@ -145,42 +145,33 @@ class VirtualFS:
         self._state[self.CWD_KEY] = absolute
 
     def glob(self, pattern: str) -> list[str]:
-        """Return list of paths matching a glob pattern."""
-        results = []
-        cwd = self.getcwd()
+        """Paths matching a glob pattern, by path segment.
 
-        # If pattern is absolute, we match against full paths
+        The semantics are ``pathlib``'s, as ``IsolatedFS`` answers on
+        Python 3.13 and later: ``*``, ``?`` and ``[...]`` match within
+        one segment, ``**`` matches zero or more directories (a trailing
+        one matches everything below, the directory itself included),
+        hidden names match like any other, and directories match as well
+        as files. Only the pattern's fixed leading directory is listed.
+
+        An absolute pattern answers in absolute paths. A relative one
+        searches from the working directory and answers relative to it,
+        naming the working directory itself ``.``.
+        """
         if pattern.startswith("/"):
-            match_pattern = pattern.lstrip("/")
-        else:
-            if cwd == "/":
-                match_pattern = pattern
-            else:
-                match_pattern = f"{cwd.lstrip('/')}/{pattern}"
+            return glob_from_list(self, pattern)
 
-        for key in self._state.keys():
-            if not self._is_vfs_key(key):
-                continue
-
-            path = self._decode_path(
-                key
-            )  # normalized path e.g. "src/main.py" (no leading slash)
-
-            # fnmatch against the full relative-to-root path
-            if fnmatch.fnmatch(path, match_pattern):
-                if pattern.startswith("/"):
-                    # Return as absolute path (virtual)
-                    results.append("/" + path)
-                else:
-                    # Return relative to CWD
-                    if cwd == "/":
-                        results.append(path)
-                    elif path.startswith(cwd.lstrip("/") + "/"):
-                        # cwd="/src" -> path="src/main.py"
-                        # cwd.lstrip("/") + "/" -> "src/"
-                        prefix_len = len(cwd.lstrip("/")) + 1
-                        results.append(path[prefix_len:])
-
+        cwd = self.getcwd()
+        base = cwd.rstrip("/")
+        results = []
+        for match in glob_from_list(self, f"{base}/{pattern}"):
+            # Every match is the working directory or below it.
+            results.append("." if match == cwd else match[len(base) + 1 :])
+        # The matcher has no name for "/" itself; relative to it, it's ".".
+        if base == "" and segments_match(
+            [part for part in pattern.split("/") if part and part != "."], []
+        ):
+            results.append(".")
         return sorted(results)
 
     def resolve_path(self, path: str) -> str:
