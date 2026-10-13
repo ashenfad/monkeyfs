@@ -184,6 +184,48 @@ def _segments_match(pattern: list[str], parts: list[str]) -> bool:
     )
 
 
+def _patterns_below(pattern: list[str], prefix: list[str]) -> set[tuple[str, ...]]:
+    """What a mount at ``prefix`` is asked for, given a glob ``pattern``.
+
+    Both are lists of path segments. The pattern's leading segments must
+    match the prefix's, with the segment semantics ``_segments_match``
+    uses: ``*``, ``?`` and ``[...]`` match within one segment, and ``**``
+    matches zero or more. What is left of the pattern after the prefix is
+    the mount's share, relative to its root: an empty one means the
+    mount's root itself matches. A ``**`` still open when the prefix ends
+    carries into the mount as ``**``, and its zero-length match is handed
+    over explicitly as well, so a mount whose own ``glob`` needs a
+    directory for a ``**`` (``VirtualFS``'s does) still answers for the
+    files at its root. A pattern that cannot reach the prefix gives
+    nothing.
+    """
+    found: set[tuple[str, ...]] = set()
+    seen: set[tuple[int, int]] = set()
+    stack = [(0, 0)]
+    while stack:
+        i, j = stack.pop()
+        if (i, j) in seen:
+            continue
+        seen.add((i, j))
+        if j == len(prefix):
+            found.add(tuple(pattern[i:]))
+            k = i
+            while k < len(pattern) and pattern[k] == "**":
+                k += 1
+            if k > i:
+                found.add(tuple(pattern[k:]))
+            continue
+        if i == len(pattern):
+            continue
+        head = pattern[i]
+        if head == "**":
+            stack.append((i + 1, j))  # matches nothing more of the prefix
+            stack.append((i, j + 1))  # takes prefix[j] and stays open
+        elif fnmatch.fnmatchcase(prefix[j], head):
+            stack.append((i + 1, j + 1))
+    return found
+
+
 class MountFS:
     """Routes filesystem operations to backing filesystems by path prefix.
 
@@ -810,7 +852,27 @@ class MountFS:
         fs.utime(inner, times)
 
     def glob(self, pattern: str) -> list[str]:
+        """Absolute paths matching ``pattern``, across every mount it reaches.
+
+        The base answers with its own ``glob``, less what a mount shadows.
+        A mount answers when the pattern can reach it: its leading
+        segments must match the mount's prefix, with ``*``, ``?`` and
+        ``[...]`` matching one segment and ``**`` any number. So
+        ``/workspace/**/test_*.py`` searches a mount at
+        ``/workspace/docs``, and ``/workspace/*/test_*.py`` hands it
+        ``/test_*.py``. The mount is asked with its own ``glob``, or
+        answers from ``list()`` without one (see ``_glob_from_list``).
+
+        The directories the composition shows without any filesystem
+        holding them -- a mount's root, and every directory on the way to
+        one -- match with those segment semantics too, as ``list()``
+        shows them. Each backend matches its own content with its own
+        ``glob``: ``IsolatedFS`` and the fallback by segments, and
+        ``VirtualFS`` by ``fnmatch`` over the whole path, where ``*``
+        crosses ``/`` and no directory matches.
+        """
         abs_pattern = self._to_absolute(pattern)
+        parts = [part for part in abs_pattern.split("/") if part]
         results = set()
 
         # Glob on base FS using absolute pattern (CWD-aware)
@@ -824,16 +886,39 @@ class MountFS:
             ):
                 results.add(match)
 
-        # Glob on each mount
+        # Glob on each mount the pattern reaches, with what is left of the
+        # pattern below its prefix.
         for prefix, mount_fs in self._mounts.items():
-            # Check if pattern could match under this prefix
-            if abs_pattern.startswith(prefix + "/") or abs_pattern == prefix:
-                inner_pattern = abs_pattern[len(prefix) :] or "/"
+            for rest in _patterns_below(parts, prefix.strip("/").split("/")):
+                if not rest:
+                    results.add(prefix)
+                    continue
+                inner_pattern = "/" + "/".join(rest)
                 for match in _optional(
                     mount_fs, "glob", _glob_from_list, inner_pattern
                 ):
                     if not match.startswith("/"):
                         match = "/" + match
-                    results.add(prefix + match)
+                    # pathlib names the root of a trailing ** "."
+                    full = prefix if match in ("/", "/.") else prefix + match
+                    # A deeper mount shadows this one below its prefix.
+                    if self._owner_of(full) == prefix:
+                        results.add(full)
+
+        # The directories on the way to a mount, which no filesystem may hold.
+        for directory in self._implied_dirs():
+            if _segments_match(parts, directory.strip("/").split("/")):
+                results.add(directory)
 
         return sorted(results)
+
+    def _implied_dirs(self) -> set[str]:
+        """Every directory on the way to a mount prefix, other than ``/``
+        and the prefixes themselves (see ``_is_implied_dir``)."""
+        implied: set[str] = set()
+        for prefix in self._mounts:
+            parent = posixpath.dirname(prefix)
+            while parent != "/":
+                implied.add(parent)
+                parent = posixpath.dirname(parent)
+        return implied - set(self._mounts)
