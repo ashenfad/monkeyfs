@@ -11,15 +11,21 @@ produce.
 from __future__ import annotations
 
 import errno
+import glob
 import io
 import mmap
 import os
 import posixpath
+import stat
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 
 import pytest
 
 from monkeyfs import IsolatedFS, MountFS, ReadOnlyFS, VirtualFS, patch
-from monkeyfs.base import FileInfo, FileMetadata, FileSystem
+from monkeyfs.base import FileMetadata, FileSystem
+from monkeyfs.patching.core import _metadata_to_stat_result
 from monkeyfs.virtualfile import BLOCK_SIZE, LazyBinaryFile
 
 STAMP = "2026-01-01T00:00:00+00:00"
@@ -43,6 +49,33 @@ TERMISH_METHODS = {
     "stat",
     "write",
 }
+
+
+@dataclass(frozen=True)
+class TermishMetadata:
+    """``termish.fs.protocol.FileMetadata``: the four fields and no ``st_*``.
+
+    monkeyfs's own ``FileMetadata`` carries ``st_*`` properties, so a double
+    returning it would hide any code that reads those off a backend's
+    ``stat()`` (#40).
+    """
+
+    size: int
+    created_at: str
+    modified_at: str
+    is_dir: bool = False
+
+
+@dataclass(frozen=True)
+class TermishFileInfo:
+    """``termish.fs.protocol.FileInfo``."""
+
+    name: str
+    path: str
+    size: int
+    created_at: str
+    modified_at: str
+    is_dir: bool
 
 
 class TermishFS:
@@ -124,16 +157,16 @@ class TermishFS:
         prefix = target.rstrip("/") + "/"
         return any(name.startswith(prefix) for name in self._files)
 
-    def stat(self, path: str) -> FileMetadata:
+    def stat(self, path: str) -> TermishMetadata:
         target = self._abs(path)
         if target in self._files:
-            return FileMetadata(
+            return TermishMetadata(
                 size=len(self._files[target]),
                 created_at=STAMP,
                 modified_at=STAMP,
             )
         if self.isdir(target):
-            return FileMetadata(
+            return TermishMetadata(
                 size=0, created_at=STAMP, modified_at=STAMP, is_dir=True
             )
         raise FileNotFoundError(path)
@@ -186,7 +219,9 @@ class TermishFS:
             names.add(remainder if recursive else remainder.split("/")[0])
         return sorted(names)
 
-    def list_detailed(self, path: str = ".", recursive: bool = False) -> list[FileInfo]:
+    def list_detailed(
+        self, path: str = ".", recursive: bool = False
+    ) -> list[TermishFileInfo]:
         entries = []
         base = self._abs(path)
         prefix = path.rstrip("/")
@@ -198,7 +233,7 @@ class TermishFS:
             display = f"{prefix}/{name}" if prefix != "." else name
             meta = self.stat(full)
             entries.append(
-                FileInfo(
+                TermishFileInfo(
                     name=posixpath.basename(name),
                     path=display,
                     size=meta.size,
@@ -239,6 +274,118 @@ class TestTheFixtureItself:
 
     def test_it_satisfies_the_protocol(self, termish):
         assert isinstance(termish, FileSystem)
+
+    def test_its_metadata_has_only_the_protocol_fields(self, termish):
+        termish.write("/a.txt", b"x")
+        meta = termish.stat("/a.txt")
+        assert not isinstance(meta, FileMetadata)
+        assert not any(name.startswith("st_") for name in dir(meta))
+
+
+class TestStatOverProtocolMetadata:
+    """The patch layer builds ``os.stat_result`` from the protocol's four
+    fields when a backend's metadata has no ``st_*`` of its own (#40)."""
+
+    STAMP_SECONDS = datetime.fromisoformat(STAMP).timestamp()
+
+    @pytest.fixture
+    def tree(self, termish):
+        termish.write("/a.txt", b"hello")
+        termish.write("/pkg/b.py", b"")
+        termish.write("/pkg/sub/c.py", b"12")
+        return termish
+
+    def test_os_stat_on_a_file(self, tree):
+        with patch(tree):
+            st = os.stat("/a.txt")
+        assert stat.S_ISREG(st.st_mode)
+        assert stat.S_IMODE(st.st_mode) == 0o644
+        assert st.st_size == 5
+        assert st.st_mtime == self.STAMP_SECONDS
+        assert st.st_ctime == self.STAMP_SECONDS
+        assert st.st_mtime_ns == round(self.STAMP_SECONDS * 1_000_000_000)
+
+    def test_os_stat_on_a_directory(self, tree):
+        with patch(tree):
+            st = os.stat("/pkg")
+        assert stat.S_ISDIR(st.st_mode)
+        assert stat.S_IMODE(st.st_mode) == 0o755
+
+    def test_lstat_getmtime_and_path_stat(self, tree):
+        with patch(tree):
+            assert stat.S_ISREG(os.lstat("/a.txt").st_mode)
+            assert os.path.getmtime("/a.txt") == self.STAMP_SECONDS
+            assert os.path.getctime("/a.txt") == self.STAMP_SECONDS
+            assert Path("/a.txt").stat().st_size == 5
+            assert Path("/pkg").is_dir()
+            assert Path("/a.txt").is_file()
+            assert os.path.isdir("/pkg")
+
+    def test_scandir_entries(self, tree):
+        with patch(tree):
+            with os.scandir("/") as it:
+                entries = {entry.name: entry for entry in it}
+        assert entries["a.txt"].is_file() and not entries["a.txt"].is_dir()
+        assert entries["pkg"].is_dir() and not entries["pkg"].is_file()
+        assert entries["a.txt"].stat().st_size == 5
+        assert stat.S_ISDIR(entries["pkg"].stat().st_mode)
+
+    def test_glob_and_rglob(self, tree):
+        """``os.walk`` and a recursive ``glob.glob`` also ask
+        ``os.path.islink``, which this backend lacks; ``test_mounted``
+        covers them."""
+        with patch(tree):
+            globbed = sorted(glob.glob("/pkg/*.py"))
+            rglobbed = sorted(str(p) for p in Path("/pkg").rglob("*.py"))
+        assert globbed == ["/pkg/b.py"]
+        assert rglobbed == ["/pkg/b.py", "/pkg/sub/c.py"]
+
+    def test_mounted(self, tree):
+        """Under a ``MountFS``, which answers ``islink`` for a backend with
+        none, ``os.walk`` and a recursive ``glob`` work too."""
+        with patch(MountFS(VirtualFS({}), {"/data": tree})):
+            assert os.stat("/data/a.txt").st_size == 5
+            walked = [root for root, _, _ in os.walk("/data")]
+            globbed = sorted(glob.glob("/data/**/*.py", recursive=True))
+        assert walked == ["/data", "/data/pkg", "/data/pkg/sub"]
+        assert globbed == ["/data/pkg/b.py", "/data/pkg/sub/c.py"]
+
+    @pytest.mark.parametrize("is_dir", [False, True])
+    def test_agrees_with_monkeyfs_metadata(self, is_dir):
+        """Both kinds of metadata give the same ``stat_result``."""
+        fields = dict(
+            size=0 if is_dir else 7,
+            created_at="2025-06-01T12:00:00+00:00",
+            modified_at="2026-02-03T04:05:06.5+00:00",
+            is_dir=is_dir,
+        )
+        ours = _metadata_to_stat_result(FileMetadata(**fields))
+        theirs = _metadata_to_stat_result(TermishMetadata(**fields))
+        assert theirs == ours
+        assert theirs.st_mtime_ns == ours.st_mtime_ns
+        assert theirs.st_ctime_ns == ours.st_ctime_ns
+
+    def test_st_fields_a_backend_supplies_win(self):
+        """A metadata object with some ``st_*`` of its own keeps them."""
+
+        @dataclass(frozen=True)
+        class Partial(TermishMetadata):
+            st_mode: int = stat.S_IFREG | 0o600
+            st_ino: int = 42
+
+        st = _metadata_to_stat_result(
+            Partial(size=3, created_at=STAMP, modified_at=STAMP)
+        )
+        assert st.st_mode == stat.S_IFREG | 0o600
+        assert st.st_ino == 42
+        assert st.st_size == 3
+        assert st.st_mtime == self.STAMP_SECONDS
+
+    def test_an_unparseable_timestamp_is_the_epoch(self):
+        st = _metadata_to_stat_result(
+            TermishMetadata(size=1, created_at="", modified_at="yesterday")
+        )
+        assert st.st_mtime == 0.0 and st.st_ctime == 0.0
 
 
 class TestSynthesizedOpen:
