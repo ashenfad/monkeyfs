@@ -280,20 +280,57 @@ def _stat_ns_fields(atime: float, mtime: float, ctime: float) -> dict[str, int]:
     }
 
 
-def _metadata_to_stat_result(meta: FileMetadata) -> os.stat_result:
-    """Convert FileMetadata to os.stat_result."""
+_STAT_FIELDS = (
+    "st_mode",
+    "st_ino",
+    "st_dev",
+    "st_nlink",
+    "st_uid",
+    "st_gid",
+    "st_size",
+    "st_atime",
+    "st_mtime",
+    "st_ctime",
+)
+
+
+def _protocol_metadata(meta: Any) -> FileMetadata:
+    """monkeyfs's ``FileMetadata`` for what the protocol's four fields say.
+
+    Its ``st_*`` properties are the defaults for a backend whose metadata
+    has none, so a stat built either way agrees: ``S_IFDIR | 0o755`` or
+    ``S_IFREG | 0o644`` from ``is_dir``, the size, and times parsed from the
+    ISO timestamps (``0.0`` for one that doesn't parse).
+    """
+    return FileMetadata(
+        size=getattr(meta, "size", 0),
+        created_at=getattr(meta, "created_at", ""),
+        modified_at=getattr(meta, "modified_at", ""),
+        is_dir=bool(getattr(meta, "is_dir", False)),
+    )
+
+
+def _metadata_to_stat_result(meta: Any) -> os.stat_result:
+    """Convert a backend's ``stat()`` result to ``os.stat_result``.
+
+    The protocol's metadata has four fields: ``size``, ``created_at``,
+    ``modified_at`` and ``is_dir``. monkeyfs's ``FileMetadata`` adds ``st_*``
+    properties on top, but a backend written to the protocol alone, such as
+    one of termish's filesystems, returns a type with just the four (#40).
+    Each ``st_*`` field the metadata has is used as it is; the rest come from
+    the four fields, the way ``FileMetadata`` derives them.
+    """
+    fallback: FileMetadata | None = None
+    values = []
+    for name in _STAT_FIELDS:
+        value = getattr(meta, name, None)
+        if value is None:
+            if fallback is None:
+                fallback = _protocol_metadata(meta)
+            value = getattr(fallback, name)
+        values.append(value)
+    st_atime, st_mtime, st_ctime = values[7:]
     return os.stat_result(
-        (
-            meta.st_mode,
-            meta.st_ino,
-            meta.st_dev,
-            meta.st_nlink,
-            meta.st_uid,
-            meta.st_gid,
-            meta.st_size,
-            meta.st_atime,
-            meta.st_mtime,
-            meta.st_ctime,
-        ),
-        _stat_ns_fields(meta.st_atime, meta.st_mtime, meta.st_ctime),
+        tuple(values),
+        _stat_ns_fields(st_atime, st_mtime, st_ctime),
     )
