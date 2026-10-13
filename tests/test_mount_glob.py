@@ -265,6 +265,24 @@ class TestNontainerTestDiscovery:
             assert "/workspace/test_mine.py" in found
 
 
+class TestAdjacentDoubleStars:
+    """``**/**`` means what ``**`` means. A ``VirtualFS`` mount's own glob
+    needs a directory per ``**``, so each depth has to reach it."""
+
+    @pytest.mark.parametrize(
+        "pattern", ["/a/**/**/x", "/**/**/x", "/a/**/**/**/x", "/**/a/**/**/x"]
+    )
+    def test_every_depth_is_found_in_a_virtualfs_mount(self, pattern):
+        mounted = VirtualFS({})
+        _write_all(mounted, {"/x": b"", "/d/x": b"", "/d/e/x": b""})
+        fs = MountFS(VirtualFS({}), {"/a": mounted})
+        assert fs.glob(pattern) == ["/a/d/e/x", "/a/d/x", "/a/x"]
+
+    def test_against_one_real_tree(self, composed, reference):
+        for pattern in ("/workspace/**/**/test_*.py", "/**/**/sub/**/**/*.py"):
+            assert composed.glob(pattern) == reference.glob(pattern), pattern
+
+
 class TestWhichMountsAreAsked:
     def test_a_pattern_that_cannot_reach_a_mount_never_asks_it(self):
         inner = ListCountingFS({"/test_x.py": b""})
@@ -306,6 +324,7 @@ class TestWhichMountsAreAsked:
                 {("**", "b", "**", "x"), ("b", "**", "x"), ("**", "x"), ("x",)},
             ),
             ("/a/**", "/a/b/c", {("**",), ()}),
+            ("/a/**/**/x", "/a", {("**", "x"), ("x",)}),
         ],
     )
     def test_the_share_each_mount_is_handed(self, pattern, prefix, expected):
