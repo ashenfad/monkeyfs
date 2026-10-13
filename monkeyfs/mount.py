@@ -306,12 +306,27 @@ class MountFS:
         if self._is_implied_dir(abs_path):
             raise IsADirectoryError(errno.EISDIR, os.strerror(errno.EISDIR), abs_path)
 
-    def _refuse_rename_over_implied_dir(self, src: str, dst: str) -> None:
-        """rename(2) onto an implied directory: one always holds the way to
-        a mount, so a directory is ENOTEMPTY and a file EISDIR."""
+    def _rename_is_a_no_op(self, src: str, dst: str) -> bool:
+        """Check a rename against what only the composition knows.
+
+        An implied directory renamed onto itself changes nothing (True):
+        no filesystem holds it, so there is none to ask. Any other path
+        onto itself goes to the filesystem that owns it. An implied
+        directory as the destination is refused here, since the
+        filesystem owning its path may not hold it and would not refuse,
+        but only after the source, in rename(2)'s order: a missing source
+        is ENOENT whatever the destination. An implied directory always
+        holds the way to a mount, so a directory onto one is ENOTEMPTY
+        and a file EISDIR.
+        """
+        abs_src = self._to_absolute(src)
         abs_dst = self._to_absolute(dst)
+        if abs_src == abs_dst:
+            return self._is_implied_dir(abs_src)
         if not self._is_implied_dir(abs_dst):
-            return
+            return False
+        if not self.exists(src):
+            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), src)
         if self.isdir(src):
             raise OSError(errno.ENOTEMPTY, os.strerror(errno.ENOTEMPTY), abs_dst)
         raise IsADirectoryError(errno.EISDIR, os.strerror(errno.EISDIR), abs_dst)
@@ -736,9 +751,10 @@ class MountFS:
         fs.rmdir(inner)
 
     def rename(self, src: str, dst: str) -> None:
+        if self._rename_is_a_no_op(src, dst):
+            return
         src_fs, src_inner = self._resolve(src)
         dst_fs, dst_inner = self._resolve(dst)
-        self._refuse_rename_over_implied_dir(src, dst)
         with self._implied_parents(dst):
             if src_fs is dst_fs:
                 src_fs.rename(src_inner, dst_inner)
@@ -752,9 +768,10 @@ class MountFS:
                 src_fs.remove(src_inner)
 
     def replace(self, src: str, dst: str) -> None:
+        if self._rename_is_a_no_op(src, dst):
+            return
         src_fs, src_inner = self._resolve(src)
         dst_fs, dst_inner = self._resolve(dst)
-        self._refuse_rename_over_implied_dir(src, dst)
         with self._implied_parents(dst):
             if src_fs is dst_fs:
                 src_fs.replace(src_inner, dst_inner)

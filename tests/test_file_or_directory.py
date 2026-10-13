@@ -455,6 +455,24 @@ class TestMountFSImpliedDirectories:
             )
         assert _tree(base) == ["d", "y"]
 
+    @pytest.mark.parametrize("how", ["rename", "replace"])
+    def test_a_missing_source_is_enoent_before_the_destination(self, composed, how):
+        base, fs = composed
+        move = getattr(fs, how)
+        assert _outcome(lambda: move("/missing", "/workspace"))[0] is (
+            FileNotFoundError
+        )
+        assert _tree(base) == []
+
+    @pytest.mark.parametrize("how", ["rename", "replace"])
+    def test_an_implied_directory_onto_itself_changes_nothing(self, composed, how):
+        base, fs = composed
+        move = getattr(fs, how)
+        move("/workspace", "/workspace")
+        move("/workspace", "/workspace/")
+        assert fs.isdir("/workspace") and fs.read("/workspace/docs/readme.md")
+        assert _tree(base) == []
+
     def test_under_patch(self, composed):
         base, fs = composed
         with patch(fs):
