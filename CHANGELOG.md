@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **A mount with only the required reads survives `os.walk`, `glob` and `os.path.getsize`** (#33). `MountFS` defines every optional read and passed each one to the filesystem that owns the path, whether or not that filesystem had it. A mounted backend with just `exists`, `isdir`, `isfile`, `list`, `read` and `stat`, bare or wrapped in `ReadOnlyFS`, therefore failed with `AttributeError` as soon as stdlib code reached one: `os.walk`, `glob.glob(..., recursive=True)`, `Path.rglob` and `os.path.islink` all ask `islink`, and `os.path.getsize` asks `getsize`. The protocol promises that a missing optional method raises `NotImplementedError` only for the call that needs it. Behind a `MountFS` it now does, and where the answer follows from the required reads, `MountFS` gives that answer instead: `getsize` is `stat().size`, `islink` is `False`, `readlink` raises `OSError(EINVAL)` (`FileNotFoundError` on a missing path), `samefile` compares normalized paths, and `access` answers `F_OK` and `R_OK` with `exists()`. The link fallbacks assume a backend with no `islink` has no links, as the patch layer already does; on a backend that has `islink`, `samefile` on two different paths and `readlink` on a link raise `NotImplementedError` instead. `access` with `W_OK` or `X_OK` raises it too, since the reads can't say whether a path is writable or executable. A backend method that raises `NotImplementedError` gets the same fallback as a missing one.
+- **`ReadOnlyFS.access()` raises `NotImplementedError` over a filesystem with no `access()`.** It raised `AttributeError`. `W_OK` is still refused without asking the wrapped filesystem, so a read-only mount answers `False` for it either way.
+
+### Added
+- **`check_filesystem()` mounts the backend under a `MountFS` and walks it.** As it is and wrapped in `ReadOnlyFS`, under `patch()`: `os.walk` and a recursive `glob` must reach a nested file, `os.path.getsize` must agree with the file's length and `os.path.islink` must be `False`.
+
 ## [0.2.6] - 2026-10-12
 
 ### Fixed

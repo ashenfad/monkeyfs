@@ -10,7 +10,7 @@ from __future__ import annotations
 import errno
 import os
 import posixpath
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
@@ -33,6 +33,80 @@ def _read_many(fs: Any, paths: list[str]) -> dict[str, bytes]:
         except (FileNotFoundError, IsADirectoryError, NotADirectoryError):
             continue
     return found
+
+
+def _optional(fs: Any, name: str, fallback: Callable[..., Any], *args: Any) -> Any:
+    """``fs.<name>(*args)``, or ``fallback(fs, *args)`` on a filesystem
+    without it.
+
+    A mount can be any backend, and the optional reads are not methods a
+    backend has to have. ``MountFS`` defines all of them, so the patch
+    layer always finds one here and never gets to say "not implemented"
+    itself; this is where that is decided instead. A backend that declares
+    the method but raises ``NotImplementedError`` from it -- the protocol's
+    own way of saying it lacks one -- counts as lacking it.
+
+    ``getattr`` sees through ``ReadOnlyFS``, whose ``__getattr__`` passes
+    the lookup on to the filesystem it wraps.
+    """
+    method = getattr(fs, name, None)
+    if method is not None:
+        try:
+            return method(*args)
+        except NotImplementedError:
+            pass
+    return fallback(fs, *args)
+
+
+# The fallbacks below derive their answer from the required reads where it
+# can be derived, and raise NotImplementedError where it cannot. They share
+# one premise with the patch layer's ``_fs_islink``: a backend with no
+# ``islink`` has no links, so a path names exactly one file and is never a
+# link. A backend that has ``islink`` may have links, and gets no answer
+# that depends on there being none.
+
+
+def _not_implemented(fs: Any, name: str) -> NotImplementedError:
+    return NotImplementedError(f"{type(fs).__name__} does not implement {name}()")
+
+
+def _may_have_links(fs: Any) -> bool:
+    return getattr(fs, "islink", None) is not None
+
+
+def _size_from_stat(fs: Any, path: str) -> int:
+    return fs.stat(path).size
+
+
+def _no_links(fs: Any, path: str) -> bool:
+    return False
+
+
+def _samefile_by_path(fs: Any, path1: str, path2: str) -> bool:
+    # As VirtualFS answers: a missing path is not the same file as anything.
+    if not (fs.exists(path1) and fs.exists(path2)):
+        return False
+    if path1 == path2:
+        return True
+    if _may_have_links(fs):
+        raise _not_implemented(fs, "samefile")
+    return False
+
+
+def _readlink_without_links(fs: Any, path: str) -> str:
+    if _optional(fs, "islink", _no_links, path):
+        raise _not_implemented(fs, "readlink")
+    if not fs.exists(path):
+        raise FileNotFoundError(errno.ENOENT, "No such file or directory", path)
+    raise OSError(errno.EINVAL, "Not a symbolic link", path)
+
+
+def _access_from_exists(fs: Any, path: str, mode: int) -> bool:
+    # Whatever exists on a backend with only the reads can be read. Whether
+    # it can be written or executed is not something the reads can tell.
+    if mode & (os.W_OK | os.X_OK):
+        raise _not_implemented(fs, "access")
+    return fs.exists(path)
 
 
 class MountFS:
@@ -399,11 +473,11 @@ class MountFS:
                 break
             probe = posixpath.dirname(probe)
         fs, inner = self._resolve(probe)
-        return fs.access(inner, mode)
+        return _optional(fs, "access", _access_from_exists, inner, mode)
 
     def getsize(self, path: str) -> int:
         fs, inner = self._resolve(path)
-        return fs.getsize(inner)
+        return _optional(fs, "getsize", _size_from_stat, inner)
 
     def realpath(self, path: str) -> str:
         return self._to_absolute(path)
@@ -413,7 +487,7 @@ class MountFS:
         if self._is_mount_point(abs_path):
             return False
         fs, inner = self._resolve(path)
-        return fs.islink(inner)
+        return _optional(fs, "islink", _no_links, inner)
 
     def lexists(self, path: str) -> bool:
         return self.exists(path)
@@ -423,7 +497,7 @@ class MountFS:
         fs2, inner2 = self._resolve(path2)
         if fs1 is not fs2:
             return False
-        return fs1.samefile(inner1, inner2)
+        return _optional(fs1, "samefile", _samefile_by_path, inner1, inner2)
 
     def readlink(self, path: str) -> str:
         """Read a symbolic link, translating the target into this namespace.
@@ -441,7 +515,7 @@ class MountFS:
         """
         abs_path = self._to_absolute(path)
         fs, inner = self._resolve(path)
-        target = fs.readlink(inner)
+        target = _optional(fs, "readlink", _readlink_without_links, inner)
 
         prefix = self._owner_of(abs_path)
         if prefix is None or not target.startswith("/"):
