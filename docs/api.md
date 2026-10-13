@@ -151,6 +151,8 @@ fs.write("/chapters/x.md", b"no")  # PermissionError (read-only mount)
 
 **Directory listing:** `list()` at a directory containing mount points merges entries from the base filesystem with mount-point names. Recursive listing includes contents of mounted filesystems.
 
+**Glob:** `glob()` searches every mount the pattern can reach, not only the ones whose prefix the pattern starts with. The pattern's leading segments have to match the mount's prefix, with `*`, `?` and `[...]` matching one segment and `**` matching any number, and the mount is handed the rest relative to its root. So `/workspace/**/test_*.py` searches a mount at `/workspace/docs` for `/**/test_*.py`, and `/workspace/*/test_*.py` hands it `/test_*.py`. A mount's root and the directories on the way to it match too, as `list()` shows them, so `/workspace/*` names `/workspace/docs`. Each filesystem matches its own content with its own `glob`: by segment on `IsolatedFS` and on a mount without `glob`, and by `fnmatch` over the whole path on `VirtualFS`, where `*` crosses `/` and directories never match (#38). Results are absolute paths, for a relative pattern too.
+
 **Mount-point existence:** Mount prefixes (and their implicit parents) report as existing directories via `isdir()`, `exists()`, and `stat()`.
 
 **Cross-mount rename:** Files are copied then removed. Directory renames across mount boundaries raise `OSError(errno.EXDEV)`, matching POSIX cross-device semantics.
