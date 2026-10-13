@@ -10,6 +10,7 @@ produce.
 
 from __future__ import annotations
 
+import errno
 import io
 import mmap
 import os
@@ -94,6 +95,14 @@ class TermishFS:
 
     def write(self, path: str, content: bytes, mode: str = "w") -> None:
         target = self._abs(path)
+        # A path is a file or a directory, never both (termish#31).
+        if self.isdir(target):
+            raise IsADirectoryError(errno.EISDIR, "Is a directory", path)
+        parent = posixpath.dirname(target)
+        while parent and parent != "/":
+            if parent in self._files:
+                raise NotADirectoryError(errno.ENOTDIR, "Not a directory", path)
+            parent = posixpath.dirname(parent)
         if mode == "a":
             content = self._files.get(target, b"") + content
         self._files[target] = content

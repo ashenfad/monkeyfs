@@ -96,12 +96,13 @@ class TestVFSMakedirs:
         assert vfs.isdir("a/b/c") is True
 
     def test_makedirs_raises_on_file_in_path(self):
-        """makedirs raises if any path component is a file."""
+        """makedirs raises if any path component is a file: ENOTDIR, as
+        os.makedirs() raises it."""
         vfs = VirtualFS({})
 
         vfs.write("a", b"content")
 
-        with pytest.raises(FileExistsError):
+        with pytest.raises(NotADirectoryError):
             vfs.makedirs("a/b/c")
 
     def test_makedirs_exist_ok_false_raises_on_an_existing_directory(self):

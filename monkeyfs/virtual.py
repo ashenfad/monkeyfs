@@ -548,6 +548,39 @@ class VirtualFS:
         """
         return "/" + normalized.strip("/")
 
+    def _file_on_the_way(self, normalized: str) -> str | None:
+        """The first file among the directories above a normalized path.
+
+        A path is a file or a directory, never both, so nothing can be
+        created below a file. Walks up from the parent and stops at the
+        first directory: above a directory there is no file on the way.
+        Returns the file's absolute path, or None.
+        """
+        parts = normalized.strip("/").split("/")
+        for depth in range(len(parts) - 1, 0, -1):
+            ancestor = "/" + "/".join(parts[:depth])
+            if self.isdir(ancestor):
+                return None
+            if self.isfile(ancestor):
+                return ancestor
+        return None
+
+    def _refuse_file_at(self, normalized: str) -> None:
+        """Raise unless a file can be written at a normalized path.
+
+        A directory there is ``IsADirectoryError``, and a file on the way
+        to it ``NotADirectoryError``, as a real filesystem answers both.
+        Either write would leave a path that is a file and a directory at
+        once.
+        """
+        absolute = self._absolute(normalized)
+        if self.isdir(absolute):
+            raise IsADirectoryError(errno.EISDIR, os.strerror(errno.EISDIR), absolute)
+        if self._file_on_the_way(normalized) is not None:
+            raise NotADirectoryError(
+                errno.ENOTDIR, os.strerror(errno.ENOTDIR), absolute
+            )
+
     def _normalize_path(self, path: str) -> str:
         """Normalize file path for consistent internal keys.
 
@@ -724,14 +757,18 @@ class VirtualFS:
 
         Raises:
             TypeError: If content is not bytes.
+            IsADirectoryError: If path is a directory.
+            NotADirectoryError: If a path on the way to it is a file.
             OSError: If write would exceed max_size_mb limit.
         """
         if not isinstance(content, bytes):
             raise TypeError(f"Expected bytes, got {type(content).__name__}")
 
-        # Auto-create parent directories
         resolved = self.resolve_path(path)
         normalized = self._normalize_path(resolved)
+        self._refuse_file_at(normalized)
+
+        # Auto-create parent directories
         parent = "/".join(normalized.split("/")[:-1])
         if parent and not self.isdir("/" + parent):
             self.makedirs("/" + parent)
@@ -771,8 +808,14 @@ class VirtualFS:
         Args:
             files: Mapping of file path to content (bytes).
 
+        Every path is checked before any is written, so a batch that is
+        refused writes nothing.
+
         Raises:
             TypeError: If any content is not bytes.
+            IsADirectoryError: If any path is a directory.
+            NotADirectoryError: If a path on the way to any of them is a
+                file, already or because the batch writes one there.
             OSError: If writes would exceed max_size_mb limit.
 
         Example:
@@ -787,6 +830,21 @@ class VirtualFS:
                 raise TypeError(
                     f"Expected bytes for '{path}', got {type(content).__name__}"
                 )
+
+        # The batch as a whole must leave each path a file or a directory:
+        # none may be a directory already, none may sit below a file, and
+        # none may sit below another path the batch writes as a file.
+        batch = {self._canonical_path(path) for path in files}
+        for normalized in batch:
+            self._refuse_file_at(normalized)
+            parts = normalized.split("/")
+            for depth in range(len(parts) - 1, 0, -1):
+                if "/".join(parts[:depth]) in batch:
+                    raise NotADirectoryError(
+                        errno.ENOTDIR,
+                        os.strerror(errno.ENOTDIR),
+                        self._absolute(normalized),
+                    )
 
         # Check combined size limit before writing any files
         if self._max_size_bytes is not None:
@@ -1093,6 +1151,7 @@ class VirtualFS:
                 exists, including a directory that is there only because a
                 file path passes through it.
             FileNotFoundError: If parent doesn't exist and parents=False.
+            NotADirectoryError: If a path on the way to it is a file.
         """
         if parents:
             self.makedirs(path, exist_ok=exist_ok)
@@ -1104,6 +1163,11 @@ class VirtualFS:
         # Validate parent exists
         parent = "/".join(normalized.split("/")[:-1])
         if parent and not self.isdir("/" + parent):
+            if self._file_on_the_way(normalized) is not None:
+                absolute = self._absolute(normalized)
+                raise NotADirectoryError(
+                    errno.ENOTDIR, os.strerror(errno.ENOTDIR), absolute
+                )
             raise FileNotFoundError(f"No such file or directory: '{path}'")
 
         # Check if already exists (on the absolute path: ``path`` is the
@@ -1140,6 +1204,7 @@ class VirtualFS:
         Raises:
             FileExistsError: If path exists as a file, or if it exists as a
                 directory and exist_ok is False.
+            NotADirectoryError: If a path on the way to it is a file.
         """
         path = self.resolve_path(path)
 
@@ -1153,6 +1218,11 @@ class VirtualFS:
         for i in range(len(parts)):
             dir_path = "/" + "/".join(parts[: i + 1])
             if self.isfile(dir_path):
+                if i < len(parts) - 1:
+                    # A file on the way, as os.makedirs() reports it.
+                    raise NotADirectoryError(
+                        errno.ENOTDIR, os.strerror(errno.ENOTDIR), self._absolute(path)
+                    )
                 raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), dir_path)
             if not self.isdir(dir_path):
                 self.mkdir(dir_path, exist_ok=True)
@@ -1197,15 +1267,60 @@ class VirtualFS:
             src: Source path (file or directory).
             dst: Destination path.
 
+        Follows rename(2), as ``os.rename`` does on ``IsolatedFS``: a file
+        replaces a file, and a directory replaces an empty directory. A
+        missing parent of ``dst`` is created, as ``write`` creates one.
+
         Raises:
             FileNotFoundError: If source doesn't exist.
+            IsADirectoryError: If src is a file and dst a directory.
+            NotADirectoryError: If src is a directory and dst a file, or a
+                path on the way to dst is a file.
+            OSError: ENOTEMPTY if src is a directory and dst a directory
+                that is not empty; EINVAL if dst is inside src.
         """
         src_resolved = self.resolve_path(src)
         dst_resolved = self.resolve_path(dst)
         src_norm = self._normalize_path(src_resolved)
         dst_norm = self._normalize_path(dst_resolved)
+        dst_abs = self._absolute(dst_norm)
 
-        if self.isfile(src):
+        src_is_file = self.isfile(src)
+        if not src_is_file and not self.isdir(src):
+            raise FileNotFoundError(src)
+        if src_norm == dst_norm:
+            # Renaming a path onto itself changes nothing.
+            return
+        if self._file_on_the_way(dst_norm) is not None:
+            raise NotADirectoryError(errno.ENOTDIR, os.strerror(errno.ENOTDIR), dst_abs)
+
+        if src_is_file:
+            if self.isdir(dst_abs):
+                raise IsADirectoryError(
+                    errno.EISDIR, os.strerror(errno.EISDIR), dst_abs
+                )
+        else:
+            if src_norm == "/" or dst_norm.startswith(src_norm.rstrip("/") + "/"):
+                raise OSError(
+                    errno.EINVAL,
+                    "Cannot move a directory into itself",
+                    dst_abs,
+                )
+            if self.isfile(dst_abs):
+                raise NotADirectoryError(
+                    errno.ENOTDIR, os.strerror(errno.ENOTDIR), dst_abs
+                )
+            if self.isdir(dst_abs):
+                if self.list(dst_abs):
+                    raise OSError(
+                        errno.ENOTEMPTY, os.strerror(errno.ENOTEMPTY), dst_abs
+                    )
+                # An empty directory is replaced: its row goes, and src's
+                # tree takes its place.
+                self._meta_drop(dst_norm)
+                self._dir_cache = None
+
+        if src_is_file:
             # File rename
             content = self.read(src)
             src_meta = self._meta_at(src_norm)
@@ -1227,7 +1342,7 @@ class VirtualFS:
 
             self.remove(src)
 
-        elif self.isdir(src):
+        else:
             # Directory rename — move all children
             src_prefix = src_norm.rstrip("/") + "/"
 
@@ -1262,8 +1377,6 @@ class VirtualFS:
                 self._meta_put(dst_norm + path[len(src_norm) :], meta)
 
             self._dir_cache = None
-        else:
-            raise FileNotFoundError(src)
 
     def replace(self, src: str, dst: str) -> None:
         """Replace dst with src (alias for rename)."""

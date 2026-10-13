@@ -14,6 +14,7 @@ which is what the protocol's whole-file ``write()`` can express.
 
 from __future__ import annotations
 
+import errno
 import io
 import os
 import posixpath
@@ -455,6 +456,22 @@ def _read_or_none(fs: Any, path: str) -> bytes | None:
         return None
 
 
+def _file_on_the_way(fs: Any, directory: str) -> bool:
+    """Whether a missing absolute ``directory`` is missing because a file
+    stands at it or above it, rather than because a directory is absent.
+
+    Walks up from ``directory`` and stops at the first directory there is.
+    """
+    probe = directory
+    while probe not in ("", "/"):
+        if fs.isfile(probe):
+            return True
+        if fs.isdir(probe):
+            return False
+        probe = posixpath.dirname(probe)
+    return False
+
+
 def _parent_dir(fs: Any, path: str) -> str:
     """The absolute parent directory of ``path``, or ``""`` at the root.
 
@@ -506,6 +523,8 @@ def open_file(fs: Any, path: str, mode: str = "r", **kwargs: Any) -> Any:
         FileNotFoundError: Reading a file that is not there, or creating one
             whose parent directory is not there (POSIX open()).
         FileExistsError: Exclusive creation over an existing path.
+        IsADirectoryError: Opening a directory to write or update it.
+        NotADirectoryError: Creating a file below a file.
         ValueError: If the mode is not a mode.
     """
     if "r" in mode and not any(c in mode for c in "+wax"):
@@ -521,16 +540,29 @@ def open_file(fs: Any, path: str, mode: str = "r", **kwargs: Any) -> Any:
 
     if "w" in mode or "a" in mode or "x" in mode or ("r" in mode and "+" in mode):
         if "r" in mode and "+" in mode and not fs.isfile(path):
+            if fs.isdir(path):
+                raise IsADirectoryError(errno.EISDIR, os.strerror(errno.EISDIR), path)
             raise FileNotFoundError(path)
 
         if "x" in mode and fs.exists(path):
             raise FileExistsError(f"[Errno 17] File exists: '{path}'")
 
+        # A path is a file or a directory, never both: opening a directory
+        # for writing is EISDIR, as it is on a real filesystem, rather than
+        # a handle whose close() would write a file over it.
+        if fs.isdir(path):
+            raise IsADirectoryError(errno.EISDIR, os.strerror(errno.EISDIR), path)
+
         # POSIX open() fails with ENOENT on a missing parent rather than
         # creating the tree, and a direct write() that creates parents for
         # convenience must not make open() more forgiving than the real one.
+        # A file on the way is ENOTDIR instead.
         parent = _parent_dir(fs, path)
         if parent and not fs.isdir(parent):
+            if _file_on_the_way(fs, parent):
+                raise NotADirectoryError(
+                    errno.ENOTDIR, os.strerror(errno.ENOTDIR), path
+                )
             raise FileNotFoundError(f"No such file or directory: '{path}'")
 
         return VirtualFile(fs, path, mode)
