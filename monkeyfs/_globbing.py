@@ -43,11 +43,29 @@ def glob_from_list(fs: Any, pattern: str) -> list[str]:
 
     rest = parts[len(fixed) :]
     base = root.rstrip("/")
-    found = [
-        f"{base}/{entry}"
-        for entry in fs.list(root, recursive=True)
-        if segments_match(rest, entry.split("/"))
-    ]
+    head = rest
+    while head and head[-1] == "**":
+        head = head[:-1]
+    if head == rest:
+        found = [
+            f"{base}/{entry}"
+            for entry in fs.list(root, recursive=True)
+            if segments_match(rest, entry.split("/"))
+        ]
+    else:
+        # A trailing ``**`` matches what is below a path that matches the
+        # rest of the pattern, and that path itself only if it is a
+        # directory: pathlib descends through a directory, never a file,
+        # so in ``/*/**`` the ``*`` names a directory.
+        below = [*head, "**", "*"]
+        found = []
+        for entry in fs.list(root, recursive=True):
+            entry_parts = entry.split("/")
+            path = f"{base}/{entry}"
+            if segments_match(below, entry_parts) or (
+                segments_match(head, entry_parts) and fs.isdir(path)
+            ):
+                found.append(path)
     # A pattern of only ``**`` below the fixed directory matches that
     # directory too, as pathlib's does -- unless it is the root, which
     # has no name to report.
