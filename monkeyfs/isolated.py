@@ -102,31 +102,21 @@ class IsolatedFS:
                 # Use list to consume generator
                 matches = list(search_path.glob(search_pattern))
 
-                # Convert matches back to virtual paths
+                # Convert matches back to virtual paths. Each match is the
+                # search root joined with what matched, e.g.
+                # /tmp/root/src/foo.py.
                 results = []
                 for m in matches:
-                    # m is absolute real path e.g. /tmp/root/src/foo.py
-                    # relative to root: src/foo.py
-                    rel = m.relative_to(self.root)
-                    virtual = "/" + str(rel)
-
-                    if not pattern.startswith("/"):
-                        # Convert absolute virtual to relative to CWD
-                        # e.g. /src/foo.py, cwd=/src -> foo.py
-                        cwd = self.getcwd()
-                        if virtual == cwd:
-                            # The cwd itself, which a ``**`` matches.
-                            results.append(".")
-                        elif virtual.startswith(cwd):
-                            if cwd == "/":
-                                results.append(virtual.lstrip("/"))
-                            else:
-                                results.append(virtual[len(cwd) + 1 :])
-                        else:
-                            # Fallback
-                            results.append(virtual)
+                    if pattern.startswith("/"):
+                        # Relative to root: /src/foo.py
+                        results.append("/" + str(m.relative_to(self.root)))
                     else:
-                        results.append(virtual)
+                        # Relative to where the search started: foo.py, or
+                        # "." for the cwd itself, which a ``**`` matches.
+                        # The search root is the cwd resolved, so relating
+                        # a match to the cwd as named would miss when the
+                        # cwd goes through a link.
+                        results.append(str(m.relative_to(search_path)))
 
                 return sorted(results)
             except (OSError, ValueError):
