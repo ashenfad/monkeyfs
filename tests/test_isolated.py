@@ -541,6 +541,24 @@ class TestIsolatedGlob:
         assert "" not in result
         assert "s" in result
 
+    @pytest.mark.parametrize("link", ["/link", "/re"])
+    def test_glob_relative_from_a_symlinked_cwd(self, tmp_path, link):
+        """Results stay relative to the cwd as it was named, a link included.
+
+        The search starts from the cwd's resolved path, so relating each
+        match back to the logical cwd by string missed (``/link`` against
+        ``/real/a.py``) or cut a name short (``/re`` against ``/real/a.py``).
+        """
+        fs = IsolatedFS(str(tmp_path))
+        fs.write("/real/a.py", b"")
+        fs.write("/real/s/b.py", b"")
+        fs.symlink("/real", link)
+        fs.chdir(link)
+        assert fs.getcwd() == link
+        assert fs.glob("*.py") == ["a.py"]
+        assert fs.glob("**/*.py") == ["a.py", "s/b.py"]
+        assert fs.glob("*") == ["a.py", "s"]
+
 
 # ---------------------------------------------------------------------------
 # Path validation
