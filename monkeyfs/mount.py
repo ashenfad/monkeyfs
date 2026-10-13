@@ -196,9 +196,15 @@ def _patterns_below(pattern: list[str], prefix: list[str]) -> set[tuple[str, ...
     carries into the mount as ``**``, and its zero-length match is handed
     over explicitly as well, so a mount whose own ``glob`` needs a
     directory for a ``**`` (``VirtualFS``'s does) still answers for the
-    files at its root. A pattern that cannot reach the prefix gives
-    nothing.
+    files at its root. Adjacent ``**`` segments are one ``**``, as they
+    are in pathlib, so the mount is not asked for one directory per
+    ``**`` either. A pattern that cannot reach the prefix gives nothing.
     """
+    collapsed: list[str] = []
+    for part in pattern:
+        if not (part == "**" and collapsed and collapsed[-1] == "**"):
+            collapsed.append(part)
+    pattern = collapsed
     found: set[tuple[str, ...]] = set()
     seen: set[tuple[int, int]] = set()
     stack = [(0, 0)]
@@ -209,11 +215,8 @@ def _patterns_below(pattern: list[str], prefix: list[str]) -> set[tuple[str, ...
         seen.add((i, j))
         if j == len(prefix):
             found.add(tuple(pattern[i:]))
-            k = i
-            while k < len(pattern) and pattern[k] == "**":
-                k += 1
-            if k > i:
-                found.add(tuple(pattern[k:]))
+            if i < len(pattern) and pattern[i] == "**":
+                found.add(tuple(pattern[i + 1 :]))
             continue
         if i == len(pattern):
             continue
