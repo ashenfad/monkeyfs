@@ -493,6 +493,54 @@ class TestIsolatedGlob:
         fs = IsolatedFS(str(tmp_path))
         assert fs.glob("*.xyz") == []
 
+    @pytest.mark.parametrize(
+        "cwd, pattern, expected",
+        [
+            ("/workspace", "*.py", ["a.py"]),
+            ("/workspace", "*", ["a.py", "s"]),
+            ("/workspace", "s/*.py", ["s/b.py"]),
+            ("/workspace", "**/*.py", ["a.py", "s/b.py", "s/t/c.py"]),
+            ("/workspace", "*/**/*.py", ["s/b.py", "s/t/c.py"]),
+            ("/workspace/s", "*.py", ["b.py"]),
+            ("/workspace/s", "**/*.py", ["b.py", "t/c.py"]),
+            ("/workspace", "*.txt", []),
+        ],
+    )
+    def test_glob_relative_from_nested_cwd(self, tmp_path, cwd, pattern, expected):
+        """A relative pattern searches the working directory, once (#39).
+
+        The search root was the cwd stripped of its slash, which
+        resolution joined onto the cwd again: from /workspace it searched
+        /workspace/workspace and found nothing.
+        """
+        fs = IsolatedFS(str(tmp_path))
+        fs.write("/top.py", b"")
+        fs.write("/workspace/a.py", b"")
+        fs.write("/workspace/s/b.py", b"")
+        fs.write("/workspace/s/t/c.py", b"")
+        fs.chdir(cwd)
+        assert fs.glob(pattern) == expected
+        # The absolute form of the same pattern finds the same paths.
+        assert fs.glob(f"{cwd}/{pattern}") == [f"{cwd}/{p}" for p in expected]
+
+    def test_glob_relative_pattern_can_climb_out_of_the_cwd(self, tmp_path):
+        fs = IsolatedFS(str(tmp_path))
+        fs.write("/workspace/a.py", b"")
+        fs.write("/workspace/s/b.py", b"")
+        fs.chdir("/workspace/s")
+        assert fs.glob("../*.py") == ["../a.py"]
+
+    def test_glob_double_star_from_nested_cwd_names_the_cwd_dot(self, tmp_path):
+        """``**`` matches the directory it starts in, named ``.`` from any cwd."""
+        fs = IsolatedFS(str(tmp_path))
+        fs.write("/workspace/s/b.py", b"")
+        assert "." in fs.glob("**")
+        fs.chdir("/workspace")
+        result = fs.glob("**")
+        assert "." in result
+        assert "" not in result
+        assert "s" in result
+
 
 # ---------------------------------------------------------------------------
 # Path validation
