@@ -8,6 +8,7 @@ specific prefixes (e.g., "/chapters", "/data/external").
 from __future__ import annotations
 
 import errno
+import fnmatch
 import os
 import posixpath
 from collections.abc import Callable, Iterable, Iterator
@@ -107,6 +108,66 @@ def _access_from_exists(fs: Any, path: str, mode: int) -> bool:
     if mode & (os.W_OK | os.X_OK):
         raise _not_implemented(fs, "access")
     return fs.exists(path)
+
+
+_WILDCARDS = frozenset("*?[")
+
+
+def _glob_from_list(fs: Any, pattern: str) -> list[str]:
+    """Match an absolute ``pattern`` against what ``list()`` reports.
+
+    The semantics are ``pathlib``'s, as ``IsolatedFS`` answers on Python
+    3.13 and later, so a mount over a host directory and a mount over an
+    object agree: ``*``, ``?`` and ``[...]`` match within one path segment,
+    a ``**`` segment matches zero or more directories (a trailing one
+    matches everything below, the directory itself included), hidden
+    names match like any other, and directories match as well as files.
+
+    Only the pattern's fixed leading directory -- everything before the
+    first segment with a wildcard -- is listed, recursively, so
+    ``/data/2024/*.csv`` walks ``/data/2024`` and nothing else.
+    """
+    parts = [part for part in pattern.split("/") if part]
+    fixed: list[str] = []
+    for part in parts:
+        if _WILDCARDS.intersection(part):
+            break
+        fixed.append(part)
+    root = "/" + "/".join(fixed)
+    if len(fixed) == len(parts):
+        return [root] if fs.exists(root) else []
+    if not fs.isdir(root):
+        return []
+
+    rest = parts[len(fixed) :]
+    base = root.rstrip("/")
+    found = [
+        f"{base}/{entry}"
+        for entry in fs.list(root, recursive=True)
+        if _segments_match(rest, entry.split("/"))
+    ]
+    # A pattern of only ``**`` below the fixed directory matches that
+    # directory too, as pathlib's does -- unless it is the root, which
+    # has no name to report.
+    if root != "/" and _segments_match(rest, []):
+        found.append(root)
+    return sorted(found)
+
+
+def _segments_match(pattern: list[str], parts: list[str]) -> bool:
+    """Whether path segments ``parts`` match pattern segments ``pattern``."""
+    if not pattern:
+        return not parts
+    head, tail = pattern[0], pattern[1:]
+    if head == "**":
+        while tail and tail[0] == "**":
+            tail = tail[1:]
+        return any(_segments_match(tail, parts[i:]) for i in range(len(parts) + 1))
+    return (
+        bool(parts)
+        and fnmatch.fnmatchcase(parts[0], head)
+        and _segments_match(tail, parts[1:])
+    )
 
 
 class MountFS:
@@ -706,7 +767,9 @@ class MountFS:
             # Check if pattern could match under this prefix
             if abs_pattern.startswith(prefix + "/") or abs_pattern == prefix:
                 inner_pattern = abs_pattern[len(prefix) :] or "/"
-                for match in mount_fs.glob(inner_pattern):
+                for match in _optional(
+                    mount_fs, "glob", _glob_from_list, inner_pattern
+                ):
                     if not match.startswith("/"):
                         match = "/" + match
                     results.add(prefix + match)

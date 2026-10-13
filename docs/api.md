@@ -168,6 +168,7 @@ fs.write("/chapters/x.md", b"no")  # PermissionError (read-only mount)
 | `readlink` | `OSError(EINVAL)` on an existing path, `FileNotFoundError` on a missing one; `NotImplementedError` if the backend has `islink` and says the path is a link |
 | `samefile` | `True` for the same normalized path, `False` for a missing one; for two different paths, `False`, or `NotImplementedError` if the backend has `islink` (a link and its target are different paths) |
 | `access` | `exists(path)` for `F_OK` and `R_OK`; `NotImplementedError` for a mode with `W_OK` or `X_OK`, which the reads can't answer. `ReadOnlyFS` still answers `False` for `W_OK` itself. |
+| `glob` | Matched against a recursive `list()` of the pattern's fixed leading directory (everything before the first segment with a wildcard), with `pathlib`'s semantics as `IsolatedFS` has them on Python 3.13+: `*`, `?` and `[...]` within a segment, `**` for zero or more directories, hidden names included, directories as well as files. |
 
 ## Protocol & types
 

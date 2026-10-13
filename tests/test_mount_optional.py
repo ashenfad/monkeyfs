@@ -15,11 +15,12 @@ import errno
 import glob
 import os
 import posixpath
+import sys
 from pathlib import Path
 
 import pytest
 
-from monkeyfs import MountFS, ReadOnlyFS, VirtualFS, patch
+from monkeyfs import IsolatedFS, MountFS, ReadOnlyFS, VirtualFS, patch
 from monkeyfs.base import FileMetadata
 
 STAMP = "2026-01-01T00:00:00+00:00"
@@ -292,3 +293,110 @@ class TestMountsWithSomeOfTheMethods:
 
         fs = MountFS(VirtualFS({}), {MOUNT: Sized()})
         assert fs.getsize(_under("/a.md")) == 42
+
+
+GLOB_TREE = {
+    "/x.py": b"top",
+    "/a/x.py": b"a",
+    "/a/n.md": b"note",
+    "/a/.h.md": b"hidden",
+    "/a/b/x.py": b"deep",
+    "/.hid/x.py": b"in a hidden directory",
+    "/c/d/e.txt": b"far down",
+}
+
+#: Patterns whose answer pathlib -- and so ``IsolatedFS`` -- gives the same
+#: way on every supported Python.
+STABLE_PATTERNS = [
+    "/**/x.py",
+    "/*/x.py",
+    "/a/*",
+    "/a/*.md",
+    "/a/**/*.md",
+    "/**/*.md",
+    "/?/x.py",
+    "/a/[xn]*",
+    "/a/x.py",
+    "/a",
+    "/a/nope.py",
+    "/nope/*",
+    "/nope/**/x.py",
+]
+
+
+class ListCountingFS(MinimalFS):
+    def __init__(self, files: dict[str, bytes]) -> None:
+        super().__init__(files)
+        self.listed: list[tuple[str, bool]] = []
+
+    def list(self, path: str = ".", recursive: bool = False) -> list[str]:
+        self.listed.append((path, recursive))
+        return super().list(path, recursive)
+
+
+def _isolated_tree(root: Path) -> IsolatedFS:
+    fs = IsolatedFS(root=str(root))
+    for path, content in GLOB_TREE.items():
+        fs.write(path, content)
+    return fs
+
+
+def _wrap(fs, how: str):
+    return fs if how == "bare" else ReadOnlyFS(fs)
+
+
+class TestGlobOverAMinimalMount:
+    """``MountFS.glob`` on a mount with no ``glob`` answers from ``list()``,
+    the way a mount whose backend has ``glob`` answers."""
+
+    @pytest.mark.parametrize("how", ["bare", "read-only"])
+    @pytest.mark.parametrize("pattern", STABLE_PATTERNS)
+    def test_matches_a_mount_that_has_glob(self, tmp_path, how, pattern):
+        minimal = MountFS(VirtualFS({}), {MOUNT: _wrap(MinimalFS(GLOB_TREE), how)})
+        globbing = MountFS(VirtualFS({}), {MOUNT: _wrap(_isolated_tree(tmp_path), how)})
+        assert minimal.glob(_under(pattern)) == globbing.glob(_under(pattern))
+
+    @pytest.mark.parametrize("how", ["bare", "read-only"])
+    def test_the_answers_themselves(self, how):
+        fs = MountFS(VirtualFS({}), {MOUNT: _wrap(MinimalFS(GLOB_TREE), how)})
+        expect = {
+            "/**/x.py": ["/.hid/x.py", "/a/b/x.py", "/a/x.py", "/x.py"],
+            "/*/x.py": ["/.hid/x.py", "/a/x.py"],
+            "/a/*.md": ["/a/.h.md", "/a/n.md"],
+            "/a/**": ["/a", "/a/.h.md", "/a/b", "/a/b/x.py", "/a/n.md", "/a/x.py"],
+            "/a/x.py": ["/a/x.py"],
+            "/a/nope.py": [],
+            "/nope/*": [],
+        }
+        for pattern, matches in expect.items():
+            assert fs.glob(_under(pattern)) == [_under(m) for m in matches], pattern
+
+    @pytest.mark.skipif(
+        sys.version_info < (3, 13),
+        reason="pathlib's trailing ** matched directories only before 3.13",
+    )
+    def test_a_trailing_double_star_matches_a_mount_that_has_glob(self, tmp_path):
+        minimal = MountFS(VirtualFS({}), {MOUNT: MinimalFS(GLOB_TREE)})
+        globbing = MountFS(VirtualFS({}), {MOUNT: _isolated_tree(tmp_path)})
+        assert minimal.glob(_under("/a/**")) == globbing.glob(_under("/a/**"))
+
+    def test_walks_only_from_the_fixed_leading_directory(self):
+        inner = ListCountingFS(GLOB_TREE)
+        fs = MountFS(VirtualFS({}), {MOUNT: inner})
+        fs.glob(_under("/a/b/*.py"))
+        assert inner.listed == [("/a/b", True)]
+
+    def test_a_pattern_with_no_wildcard_lists_nothing(self):
+        inner = ListCountingFS(GLOB_TREE)
+        fs = MountFS(VirtualFS({}), {MOUNT: inner})
+        assert fs.glob(_under("/a/n.md")) == [_under("/a/n.md")]
+        assert inner.listed == []
+
+    def test_the_test_file_search_from_nontainer(self):
+        """``ws-pytest`` looks for test files this way, under an object mount."""
+        tree = {"/test_top.py": b"", "/pkg/test_deep.py": b"", "/pkg/util.py": b""}
+        fs = MountFS(VirtualFS({}), {MOUNT: ReadOnlyFS(MinimalFS(tree))})
+        found = set(fs.glob(f"{MOUNT}/test_*.py")) | set(
+            fs.glob(f"{MOUNT}/**/test_*.py")
+        )
+        assert found == {_under("/test_top.py"), _under("/pkg/test_deep.py")}
