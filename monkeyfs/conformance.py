@@ -12,7 +12,9 @@ What it checks, in order: the required methods exist; directories,
 a file written comes back through ``stat()``, ``list()`` and ``read()``;
 ``list_detailed()`` names each entry in the namespace it was asked in; the
 ranged read means what it says, including the cases a backend that quietly
-ignores ``offset`` and ``size`` would fail; ``open()`` round-trips bytes and
+ignores ``offset`` and ``size`` would fail; mounted under a ``MountFS``, as
+it is and read-only, ``os.walk``, a recursive ``glob`` and
+``os.path.getsize`` work over it; ``open()`` round-trips bytes and
 text, through the backend's own if it has one and through the synthesized one
 under ``patch()`` if it does not; and ``rename``/``remove`` leave the
 filesystem as they found it.
@@ -26,6 +28,8 @@ Usage::
 
 from __future__ import annotations
 
+import glob
+import os
 from typing import Any
 
 from .base import REQUIRED_METHODS
@@ -79,6 +83,7 @@ def check_filesystem(fs: Any, scratch: str = SCRATCH) -> None:
         _check_file_metadata(fs, scratch, path)
         _check_listing_paths(fs, scratch)
         _check_ranged_read(fs, path)
+        _check_mounted(fs, scratch, path)
         _check_open(fs, scratch, path)
         _check_rename_and_remove(fs, scratch, path)
     finally:
@@ -395,6 +400,56 @@ def _check_ranged_read(fs: Any, path: str) -> None:
         raise AssertionError(
             "read() on a missing path must raise FileNotFoundError, range or no range"
         )
+
+
+def _check_mounted(fs: Any, scratch: str, path: str) -> None:
+    """Mounted under a ``MountFS``, as it is and read-only, the stdlib's
+    tree walkers work over it.
+
+    ``os.walk``, a recursive ``glob`` and ``os.path.getsize`` reach optional
+    methods (``islink``, ``getsize``) through the mount. A backend without
+    them is still a backend, so the composition has to cope either way.
+    """
+    from .mount import MountFS
+    from .patching import patch
+    from .readonly import ReadOnlyFS
+    from .virtual import VirtualFS
+
+    at = "/monkeyfs_mounted"
+    leaf = f"{scratch}/nested/leaf.bin"
+    _write(fs, leaf, b"leaf")
+    try:
+        for label, mounted in (("as it is", fs), ("read-only", ReadOnlyFS(fs))):
+            where = f"mounted {label} under a MountFS at {at!r}"
+            composed = MountFS(VirtualFS({}), {at: mounted})
+            with patch(composed):
+                files = {
+                    os.path.join(root, name)
+                    for root, _, names in os.walk(at + scratch)
+                    for name in names
+                }
+                _require(
+                    {at + path, at + leaf} <= files,
+                    f"{where}, os.walk({at + scratch!r}) must find "
+                    f"{at + path!r} and {at + leaf!r}, got {sorted(files)!r}",
+                )
+                found = glob.glob(f"{at}{scratch}/**/*.bin", recursive=True)
+                _require(
+                    at + leaf in found,
+                    f"{where}, a recursive glob must reach {at + leaf!r}, got "
+                    f"{sorted(found)!r}",
+                )
+                _require(
+                    os.path.getsize(at + path) == len(CONTENT),
+                    f"{where}, os.path.getsize({at + path!r}) must be {len(CONTENT)}",
+                )
+                _require(
+                    os.path.islink(at + path) is False,
+                    f"{where}, os.path.islink({at + path!r}) must be False for "
+                    f"a file written as one",
+                )
+    finally:
+        fs.remove(leaf)
 
 
 def _check_open(fs: Any, scratch: str, path: str) -> None:

@@ -32,6 +32,13 @@ class TestConformingBackends:
         """The synthesized open() is what the kit checks for this one."""
         check_filesystem(TermishFS())
 
+    def test_a_backend_without_islink_or_getsize_survives_being_mounted(self):
+        """The kit mounts every backend under a MountFS and walks it; one
+        without the optional reads the walk reaches must pass too."""
+        fs = TermishFS()
+        assert not hasattr(fs, "islink") and not hasattr(fs, "getsize")
+        check_filesystem(fs)
+
     def test_the_kit_cleans_up_after_itself(self):
         fs = VirtualFS({})
         check_filesystem(fs)
@@ -93,6 +100,14 @@ class TestBackendsThatShouldFail:
 
         with pytest.raises(AssertionError, match="size"):
             check_filesystem(WrongSize({}))
+
+    def test_a_getsize_that_disagrees_with_stat(self):
+        class WrongGetsize(VirtualFS):
+            def getsize(self, path):
+                return super().getsize(path) + 1
+
+        with pytest.raises(AssertionError, match="getsize"):
+            check_filesystem(WrongGetsize({}))
 
     def test_a_remove_that_forgives_a_missing_path(self):
         class ForgivingRemove(VirtualFS):

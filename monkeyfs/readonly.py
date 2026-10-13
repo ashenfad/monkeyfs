@@ -137,7 +137,19 @@ class ReadOnlyFS:
         return open_file(self._fs, path, mode, **kwargs)
 
     def access(self, path: str, mode: int) -> bool:
-        """Answer ``os.access()``; write access is always denied."""
+        """Answer ``os.access()``; write access is always denied.
+
+        Unlike the forwarded reads, this one is defined on the wrapper,
+        because the wrapper knows the answer for ``W_OK`` whatever it wraps.
+        For any other mode, a wrapped filesystem with no ``access()`` gets
+        ``NotImplementedError``, the protocol's contract for a missing
+        optional method, rather than an ``AttributeError`` from the lookup.
+        """
         if mode & os.W_OK:
             return False
-        return self._fs.access(path, mode)
+        backend_access = getattr(self._fs, "access", None)
+        if backend_access is None:
+            raise NotImplementedError(
+                f"{type(self._fs).__name__} does not implement access()"
+            )
+        return backend_access(path, mode)

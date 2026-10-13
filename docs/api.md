@@ -124,7 +124,7 @@ ro.write("x.txt", b"hi")  # PermissionError: Read-only filesystem
 
 **`chdir()` is a read.** It moves the filesystem's own working directory and stores nothing, and it is a required protocol method, so refusing it would break `os.chdir()` under every read-only mount.
 
-**`access()`:** Returns `False` for `os.W_OK`, delegates for `os.R_OK` and `os.F_OK`.
+**`access()`:** Returns `False` for `os.W_OK`, delegates for `os.R_OK` and `os.F_OK`. Over a filesystem with no `access()`, those modes raise `NotImplementedError`. Every other optional method is forwarded by attribute lookup, so `ReadOnlyFS` has one exactly when the filesystem it wraps does: `getattr(ReadOnlyFS(fs), "islink", None)` is `None` for an `fs` without `islink`.
 
 **Private and dunder attributes are never forwarded**, so `copy`, `pickle` and `inspect` get the `AttributeError` they probe for. The wrapped filesystem stays reachable as `ro._fs` for callers that deliberately want past the wrapper.
 
@@ -158,6 +158,16 @@ fs.write("/chapters/x.md", b"no")  # PermissionError (read-only mount)
 **Nested mounts:** Supported. A mount at `/a/b` takes priority over `/a` for paths under `/a/b/`.
 
 **Optional methods are forwarded, not dropped.** `MountFS` implements every name in `monkeyfs.base.FORWARDED_METHODS`, routing each by prefix, so composing a filesystem does not narrow it. `resolve_path()` answers in the composed namespace; `readlink()` puts the mount prefix back on a target the backend reports as absolute, which is why a backend must answer in its own namespace and never in the host's; `get_metadata_snapshot()` merges each mount's paths under its prefix and leaves out paths a mount shadows, so every path it reports is one an operation would route to the filesystem that reported it; `invalidate()` reaches every backend that keeps caches and skips those that do not.
+
+**A mount without an optional read still answers it.** A mount can be any backend, including one with only the required reads, and `os.walk`, a recursive `glob` and `Path.rglob` all reach `islink` through it. Where the owning filesystem lacks a read (or raises `NotImplementedError` from it), `MountFS` derives the answer from the required reads, and raises `NotImplementedError` where the answer can't be derived. The fallbacks assume that a backend with no `islink` has no links, which is the patch layer's assumption too:
+
+| method | without it on the mount |
+|---|---|
+| `getsize` | `stat(path).size` |
+| `islink` | `False` |
+| `readlink` | `OSError(EINVAL)` on an existing path, `FileNotFoundError` on a missing one; `NotImplementedError` if the backend has `islink` and says the path is a link |
+| `samefile` | `True` for the same normalized path, `False` for a missing one; for two different paths, `False`, or `NotImplementedError` if the backend has `islink` (a link and its target are different paths) |
+| `access` | `exists(path)` for `F_OK` and `R_OK`; `NotImplementedError` for a mode with `W_OK` or `X_OK`, which the reads can't answer. `ReadOnlyFS` still answers `False` for `W_OK` itself. |
 
 ## Protocol & types
 
@@ -220,7 +230,7 @@ from monkeyfs import check_filesystem
 check_filesystem(MyFileSystem())   # an empty one; it writes and cleans up
 ```
 
-It exercises the required methods, directories and the working directory, `stat`/`list`/`read` over a written file, every ranged-read case (including the ones a backend that accepts `offset` and `size` and then ignores them fails), `rename`/`remove`, and `open()` -- the backend's own where it has one, the synthesized one under `patch()` where it does not. It raises `AssertionError` on the first violation, naming the method and what was expected of it. Takes a scratch path as an optional second argument (default `/monkeyfs_conformance`), which must not already exist.
+It exercises the required methods, directories and the working directory, `stat`/`list`/`read` over a written file, every ranged-read case (including the ones a backend that accepts `offset` and `size` and then ignores them fails), `rename`/`remove`, `os.walk`, a recursive `glob`, `os.path.getsize` and `os.path.islink` under `patch()` with the backend mounted under a `MountFS` (as it is and wrapped in `ReadOnlyFS`), and `open()` -- the backend's own where it has one, the synthesized one under `patch()` where it does not. It raises `AssertionError` on the first violation, naming the method and what was expected of it. Takes a scratch path as an optional second argument (default `/monkeyfs_conformance`), which must not already exist.
 
 **Direct-use methods** (`DIRECT_READ_METHODS`, `DIRECT_WRITE_METHODS`) -- no stdlib shim dispatches to these, but callers reach for them and both wrappers forward them:
 
