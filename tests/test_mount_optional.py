@@ -286,6 +286,23 @@ class TestMountsWithSomeOfTheMethods:
         with patch(fs):
             assert len(list(os.walk(MOUNT))) == 3
 
+    def test_an_islink_stub_does_not_make_a_mount_have_links(self):
+        """A stub that raises NotImplementedError is a missing ``islink``,
+        here as everywhere: two different paths are two different files."""
+        fs = MountFS(VirtualFS({}), {MOUNT: StubbedFS()})
+        assert not fs.samefile(_under("/a.md"), _under("/notes/b.md"))
+        with pytest.raises(OSError) as caught:
+            fs.readlink(_under("/a.md"))
+        assert caught.value.errno == errno.EINVAL
+
+    def test_an_islink_stub_on_a_patched_backend_reads_as_no_link(self):
+        """Not behind a MountFS: the patch layer's lenient islink probe,
+        which os.scandir uses, treats the stub as no links too."""
+        with patch(StubbedFS()):
+            with os.scandir("/") as entries:
+                links = {entry.name: entry.is_symlink() for entry in entries}
+        assert links == {"a.md": False, "notes": False}
+
     def test_a_mount_with_the_method_is_still_asked(self):
         class Sized(MinimalFS):
             def getsize(self, path: str) -> int:

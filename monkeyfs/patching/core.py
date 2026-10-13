@@ -194,8 +194,10 @@ def _fs_islink(fs: Any, path: str) -> bool:
     ``islink()`` is not part of the ``FileSystem`` protocol -- it is one of the
     optional methods -- so a backend written to the documented interface may
     not have it. Callers here are answering "is this a link?" on paths they are
-    about to describe rather than mutate, and a missing method means the
-    backend has no links at all, so the honest answer is ``False``. Raising
+    about to describe rather than mutate, and a missing method -- or one
+    that raises ``NotImplementedError``, the protocol's way of saying it is
+    missing -- means the backend has no links at all, so the honest answer
+    is ``False``. Raising
     ``NotImplementedError`` (as ``os.path.islink()`` does, where the caller
     asked the question directly) would take out ``os.scandir()`` and
     ``os.lstat()`` for those backends instead.
@@ -205,6 +207,8 @@ def _fs_islink(fs: Any, path: str) -> bool:
         return False
     try:
         return bool(fn(path))
+    except NotImplementedError:
+        return False
     except OSError:
         # os.path.islink() answers False for anything it cannot look at; a
         # backend refusing the path (an escaping link, a missing parent) is

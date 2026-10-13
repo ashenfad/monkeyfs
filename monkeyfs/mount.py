@@ -62,8 +62,8 @@ def _optional(fs: Any, name: str, fallback: Callable[..., Any], *args: Any) -> A
 # The fallbacks below derive their answer from the required reads where it
 # can be derived, and raise NotImplementedError where it cannot. They share
 # one premise with the patch layer's ``_fs_islink``: a backend with no
-# ``islink`` has no links, so a path names exactly one file and is never a
-# link. A backend that has ``islink`` may have links, and gets no answer
+# ``islink`` (or one that raises NotImplementedError) has no links, so a
+# path names exactly one file and is never a link. A backend that has ``islink`` may have links, and gets no answer
 # that depends on there being none.
 
 
@@ -71,8 +71,22 @@ def _not_implemented(fs: Any, name: str) -> NotImplementedError:
     return NotImplementedError(f"{type(fs).__name__} does not implement {name}()")
 
 
-def _may_have_links(fs: Any) -> bool:
-    return getattr(fs, "islink", None) is not None
+def _may_have_links(fs: Any, path: str) -> bool:
+    """Whether ``fs`` has an ``islink``, found by asking it about ``path``.
+
+    Asked rather than looked up, so that a stub raising
+    ``NotImplementedError`` counts as missing here too, as in ``_optional``.
+    """
+    islink = getattr(fs, "islink", None)
+    if islink is None:
+        return False
+    try:
+        islink(path)
+    except NotImplementedError:
+        return False
+    except OSError:
+        pass
+    return True
 
 
 def _size_from_stat(fs: Any, path: str) -> int:
@@ -89,7 +103,7 @@ def _samefile_by_path(fs: Any, path1: str, path2: str) -> bool:
         return False
     if path1 == path2:
         return True
-    if _may_have_links(fs):
+    if _may_have_links(fs, path1):
         raise _not_implemented(fs, "samefile")
     return False
 
