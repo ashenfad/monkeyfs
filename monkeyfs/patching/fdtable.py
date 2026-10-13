@@ -70,6 +70,12 @@ class VirtualFDTable:
         if not (flags & os.O_CREAT) and not file_exists:
             raise FileNotFoundError(errno.ENOENT, "No such file or directory", path)
 
+        # A directory opened to write is EISDIR at open(2), not a failure
+        # deferred to the flush at close().
+        creates = flags & (os.O_CREAT | os.O_TRUNC)
+        if (writable or creates) and file_exists and fs.isdir(resolved):
+            raise IsADirectoryError(errno.EISDIR, "Is a directory", path)
+
         # Load existing content into buffer
         buf = io.BytesIO()
         if file_exists and not (flags & os.O_TRUNC):

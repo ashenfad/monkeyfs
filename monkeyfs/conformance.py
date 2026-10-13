@@ -10,6 +10,9 @@ protocol.
 What it checks, in order: the required methods exist; directories,
 ``getcwd``/``chdir`` and relative resolution behave, ``exist_ok`` included;
 a file written comes back through ``stat()``, ``list()`` and ``read()``;
+a path is a file or a directory, never both, so ``write()`` refuses a
+directory (``IsADirectoryError``) and a path below a file
+(``NotADirectoryError``);
 ``list_detailed()`` names each entry in the namespace it was asked in; the
 ranged read means what it says, including the cases a backend that quietly
 ignores ``offset`` and ``size`` would fail; mounted under a ``MountFS``, as
@@ -81,6 +84,7 @@ def check_filesystem(fs: Any, scratch: str = SCRATCH) -> None:
         path = f"{scratch}/probe.bin"
         _write(fs, path, CONTENT)
         _check_file_metadata(fs, scratch, path)
+        _check_file_or_directory(fs, scratch, path)
         _check_listing_paths(fs, scratch)
         _check_ranged_read(fs, path)
         _check_mounted(fs, scratch, path)
@@ -306,6 +310,56 @@ def _check_file_metadata(fs: Any, scratch: str, path: str) -> None:
         pass
     else:
         raise AssertionError("stat() must raise FileNotFoundError for a missing path")
+
+
+def _check_file_or_directory(fs: Any, scratch: str, path: str) -> None:
+    """A path is a file or a directory, never both.
+
+    A real filesystem refuses a write over a directory with EISDIR and a
+    write below a file with ENOTDIR. A backend that takes either leaves a
+    path that ``isfile()`` and ``isdir()`` both answer yes for, or a file
+    with children, and a tree no real filesystem could hold: copied out to
+    disk, or walked by code that trusts the two to exclude each other, it
+    breaks somewhere far from the write that made it.
+    """
+    directory = f"{scratch}/nested"
+    below = f"{path}/child"
+    cases = [
+        (
+            directory,
+            IsADirectoryError,
+            f"write({directory!r}) over a directory must raise IsADirectoryError",
+        ),
+        (
+            below,
+            NotADirectoryError,
+            f"write({below!r}) below the file {path!r} must raise NotADirectoryError",
+        ),
+    ]
+    for target, expected, message in cases:
+        try:
+            fs.write(target, b"refused")
+        except expected:
+            pass
+        except Exception as error:  # noqa: BLE001 - reported as the failure
+            raise AssertionError(
+                f"{message}, not {type(error).__name__} ({error})"
+            ) from error
+        else:
+            raise AssertionError(f"{message}, rather than writing it")
+
+    _require(
+        fs.isdir(directory) and not fs.isfile(directory),
+        f"a refused write({directory!r}) must leave it a directory and only that",
+    )
+    _require(
+        fs.isfile(path) and not fs.isdir(path) and fs.read(path) == CONTENT,
+        f"a refused write({below!r}) must leave {path!r} the file it was",
+    )
+    _require(
+        not fs.exists(below),
+        f"a refused write({below!r}) must not leave anything at that path",
+    )
 
 
 def _check_ranged_read(fs: Any, path: str) -> None:

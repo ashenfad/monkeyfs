@@ -294,6 +294,28 @@ class MountFS:
             and self._is_mount_point(abs_path)
         )
 
+    def _refuse_file_over_implied_dir(self, path: str) -> None:
+        """Raise ``IsADirectoryError`` if ``path`` is an implied directory.
+
+        The composition shows it as a directory, but the filesystem that
+        owns its path may hold nothing there and would take a file. A
+        path is a file or a directory, never both, so the write is
+        refused here, as a directory held by the backend refuses it.
+        """
+        abs_path = self._to_absolute(path)
+        if self._is_implied_dir(abs_path):
+            raise IsADirectoryError(errno.EISDIR, os.strerror(errno.EISDIR), abs_path)
+
+    def _refuse_rename_over_implied_dir(self, src: str, dst: str) -> None:
+        """rename(2) onto an implied directory: one always holds the way to
+        a mount, so a directory is ENOTEMPTY and a file EISDIR."""
+        abs_dst = self._to_absolute(dst)
+        if not self._is_implied_dir(abs_dst):
+            return
+        if self.isdir(src):
+            raise OSError(errno.ENOTEMPTY, os.strerror(errno.ENOTEMPTY), abs_dst)
+        raise IsADirectoryError(errno.EISDIR, os.strerror(errno.EISDIR), abs_dst)
+
     @contextmanager
     def _implied_parents(self, *paths: str) -> Iterator[None]:
         """Hold the implied directories that creates at ``paths`` land in.
@@ -404,6 +426,10 @@ class MountFS:
         bytes-level filesystem does not make it unopenable.
         """
         creates = any(c in mode for c in "wax")
+        if creates or "+" in mode:
+            if "x" in mode and self._is_implied_dir(self._to_absolute(path)):
+                raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), path)
+            self._refuse_file_over_implied_dir(path)
         with self._implied_parents(*([path] if creates else [])):
             fs, inner = self._resolve(path)
             backend_open = getattr(fs, "open", None)
@@ -660,11 +686,14 @@ class MountFS:
     # -- Write operations --
 
     def write(self, path: str, content: bytes, mode: str = "w") -> None:
+        self._refuse_file_over_implied_dir(path)
         with self._implied_parents(path):
             fs, inner = self._resolve(path)
             fs.write(inner, content, mode=mode)
 
     def write_many(self, files: dict[str, bytes]) -> None:
+        for path in files:
+            self._refuse_file_over_implied_dir(path)
         # Group by filesystem
         groups: dict[int, tuple[Any, dict[str, bytes]]] = {}
         for path, content in files.items():
@@ -709,6 +738,7 @@ class MountFS:
     def rename(self, src: str, dst: str) -> None:
         src_fs, src_inner = self._resolve(src)
         dst_fs, dst_inner = self._resolve(dst)
+        self._refuse_rename_over_implied_dir(src, dst)
         with self._implied_parents(dst):
             if src_fs is dst_fs:
                 src_fs.rename(src_inner, dst_inner)
@@ -724,6 +754,7 @@ class MountFS:
     def replace(self, src: str, dst: str) -> None:
         src_fs, src_inner = self._resolve(src)
         dst_fs, dst_inner = self._resolve(dst)
+        self._refuse_rename_over_implied_dir(src, dst)
         with self._implied_parents(dst):
             if src_fs is dst_fs:
                 src_fs.replace(src_inner, dst_inner)

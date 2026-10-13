@@ -5,6 +5,7 @@ Provides real filesystem access restricted to a specific directory.
 
 from __future__ import annotations
 
+import errno
 import io
 import os
 from collections.abc import Iterable
@@ -282,7 +283,15 @@ class IsolatedFS:
         """
         with suspend():
             resolved = self._validate_path(path)
-            resolved.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                resolved.parent.mkdir(parents=True, exist_ok=True)
+            except FileExistsError:
+                # The parent is there and is not a directory: a file on the
+                # way, which open(2) reports as ENOTDIR (as it does when the
+                # file is further up and mkdir reaches it first).
+                raise NotADirectoryError(
+                    errno.ENOTDIR, os.strerror(errno.ENOTDIR), path
+                ) from None
 
             if mode == "a":
                 with resolved.open("ab") as f:
