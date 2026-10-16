@@ -8,6 +8,7 @@ from .mount import MountFS
 from .patching import patch
 from .readonly import ReadOnlyFS
 from .virtual import VirtualFS
+from .virtualfile import LostWriteError
 
 __all__ = [
     "check_filesystem",
@@ -16,6 +17,7 @@ __all__ = [
     "FileMetadata",
     "FileSystem",
     "IsolatedFS",
+    "LostWriteError",
     "MountFS",
     "patch",
     "ReadOnlyFS",
