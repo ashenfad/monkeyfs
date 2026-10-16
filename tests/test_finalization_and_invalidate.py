@@ -147,6 +147,42 @@ class TestLostImplicitClose:
 
         assert unraisable == []
 
+    @pytest.mark.parametrize(
+        "change",
+        [
+            lambda f: f.write(" and more"),
+            lambda f: f.writelines([" and", " more"]),
+            lambda f: f.truncate(6),
+        ],
+        ids=["write", "writelines", "truncate"],
+    )
+    def test_a_change_after_a_failed_close_is_reported_if_lost(
+        self, unraisable, change
+    ):
+        vfs = _QuotaFS({})
+        f = vfs.open("/big.txt", "w")
+        f.write("too large")
+        with pytest.raises(OSError, match="quota exceeded"):
+            f.close()
+        change(f)  # content the failed close never reported
+        del f
+        gc.collect()
+
+        [(exc, _)] = unraisable
+        assert isinstance(exc, LostWriteError)
+        assert exc.filename == "/big.txt"
+
+    def test_a_failed_encode_on_explicit_close_is_not_reported_again(self, unraisable):
+        vfs = VirtualFS({})
+        f = vfs.open("/odd.txt", "w")
+        f.write("\ud800")  # a lone surrogate: not encodable as UTF-8
+        with pytest.raises(UnicodeEncodeError):
+            f.close()
+        del f
+        gc.collect()
+
+        assert unraisable == []
+
     def test_quiet_while_the_interpreter_shuts_down(self, tmp_path):
         # A file still referenced from a module global is finalized while
         # the interpreter shuts down, when sys.is_finalizing() is true.
