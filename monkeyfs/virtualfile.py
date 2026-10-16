@@ -341,7 +341,7 @@ class VirtualFile:
             raise ValueError(f"I/O operation on closed file: {self._path}")
         written = self._buffer.write(data)  # type: ignore[arg-type]
         if written:
-            self._dirty = True
+            self._changed()
         return written
 
     def writelines(self, lines: Iterable[str | bytes]) -> None:
@@ -349,7 +349,7 @@ class VirtualFile:
         if self._closed:
             raise ValueError(f"I/O operation on closed file: {self._path}")
         self._buffer.writelines(lines)  # type: ignore[arg-type]
-        self._dirty = True
+        self._changed()
 
     def read(self, size: int = -1) -> str | bytes:
         """Read data from an update-mode file."""
@@ -410,8 +410,14 @@ class VirtualFile:
         previous_size = len(self._buffer.getvalue())
         new_size = self._buffer.truncate(size)
         if new_size != previous_size:
-            self._dirty = True
+            self._changed()
         return new_size
+
+    def _changed(self) -> None:
+        """Note a change to the buffer: there is content to persist, and
+        it is content no failed close() has reported yet."""
+        self._dirty = True
+        self._close_raised = False
 
     def flush(self) -> None:
         """Flush is a no-op (content persisted on close)."""
@@ -423,17 +429,19 @@ class VirtualFile:
             return
 
         if self._dirty:
-            content = self._buffer.getvalue()
-            if isinstance(content, str):
-                content = content.encode("utf-8")
-
-            # Through the filesystem's own write(), so that whatever metadata
-            # it tracks is updated the way a direct write would update it.
             try:
+                content = self._buffer.getvalue()
+                if isinstance(content, str):
+                    content = content.encode("utf-8")
+
+                # Through the filesystem's own write(), so that whatever
+                # metadata it tracks is updated the way a direct write would
+                # update it.
                 self._fs.write(self._path, content)
             except BaseException:
-                # The caller has been told; a later finalizer that fails the
-                # same way has nothing new to report.
+                # The caller has been told about this content; a finalizer
+                # that fails to save it again has nothing new to report,
+                # until the buffer changes.
                 self._close_raised = True
                 raise
 
