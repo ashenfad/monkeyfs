@@ -18,6 +18,7 @@ import errno
 import io
 import os
 import posixpath
+import sys
 import warnings
 from collections import OrderedDict
 from collections.abc import Iterable
@@ -39,6 +40,34 @@ BLOCK_SIZE = 64 * 1024
 #: backend call each, which a handful of blocks does; holding more would be
 #: materializing the file again by a slower route.
 MAX_CACHED_BLOCKS = 4
+
+
+class LostWriteError(OSError):
+    """A file's buffered content could not be saved when it was finalized.
+
+    A file left for garbage collection rather than closed saves its content
+    from its finalizer, where an exception cannot reach the code that wrote
+    it. The failure is raised from the finalizer as this error instead, so
+    Python reports it through ``sys.unraisablehook``, where an embedder can
+    tell it apart from other unraisable exceptions. ``filename`` is the
+    file's path, ``errno`` is the failure's (``EIO`` when it has none), and
+    ``__cause__`` is the exception the save raised.
+    """
+
+
+def _lost_write(path: str, cause: BaseException) -> LostWriteError:
+    """The error reporting *cause* as the loss of *path*'s content."""
+    if isinstance(cause, OSError) and cause.strerror:
+        reason = cause.strerror
+    else:
+        reason = f"{type(cause).__name__}: {cause}"
+    error = LostWriteError(
+        getattr(cause, "errno", None) or errno.EIO,
+        f"content lost when the file was closed implicitly ({reason})",
+        path,
+    )
+    error.__cause__ = cause
+    return error
 
 
 class LazyBinaryFile(io.RawIOBase):
@@ -400,7 +429,13 @@ class VirtualFile:
 
             # Through the filesystem's own write(), so that whatever metadata
             # it tracks is updated the way a direct write would update it.
-            self._fs.write(self._path, content)
+            try:
+                self._fs.write(self._path, content)
+            except BaseException:
+                # The caller has been told; a later finalizer that fails the
+                # same way has nothing new to report.
+                self._close_raised = True
+                raise
 
         self._closed = True
 
@@ -408,6 +443,8 @@ class VirtualFile:
         self,
         _warn=warnings.warn,
         _ResourceWarning=ResourceWarning,
+        _is_finalizing=sys.is_finalizing,
+        _lost_write=_lost_write,
     ) -> None:
         """Best-effort flush on garbage collection.
 
@@ -418,14 +455,25 @@ class VirtualFile:
         manager) remains the reliable path -- finalization order during
         interpreter shutdown is not guaranteed.
 
-        ``_warn``/``_ResourceWarning`` are bound as defaults because module
-        globals may already be cleared when finalizers run at interpreter
-        shutdown (the ``subprocess.Popen.__del__`` idiom).
+        A save that fails raises ``LostWriteError`` out of the finalizer,
+        which Python hands to ``sys.unraisablehook``. It stays silent while
+        the interpreter shuts down, when nothing is left to act on it, and
+        when an explicit close() already raised the failure to its caller.
+
+        The defaults are bound because module globals may already be cleared
+        when finalizers run at interpreter shutdown (the
+        ``subprocess.Popen.__del__`` idiom).
         """
         if getattr(self, "_closed", True):
             return
+        reported = getattr(self, "_close_raised", False)
         try:
             self.close()
+        except Exception as e:
+            if reported or _is_finalizing():
+                return
+            raise _lost_write(self._path, e) from e
+        try:
             _warn(
                 f"unclosed file {self._path!r}; buffered content was "
                 "persisted at garbage collection",
@@ -434,7 +482,7 @@ class VirtualFile:
                 source=self,
             )
         except Exception:
-            pass  # never raise from __del__ (e.g. interpreter teardown)
+            pass  # warnings may be unusable at interpreter teardown
 
     @property
     def closed(self) -> bool:
