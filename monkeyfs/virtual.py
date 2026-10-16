@@ -7,13 +7,89 @@ import errno
 import io
 import json
 import os
-from collections.abc import Iterable, MutableMapping
+from collections.abc import Iterable, Iterator, MutableMapping
 from datetime import datetime, timezone
 from typing import Any
 
 from ._globbing import glob_from_list, segments_match
 from .base import FileInfo, FileMetadata
+from .context import suspend
 from .virtualfile import LazyBinaryFile, VirtualFile, open_file
+
+
+class _HostState(MutableMapping):
+    """A VirtualFS's state, reached with filesystem interception suspended.
+
+    The state lives on the host. One that keeps its values in real files
+    reads, writes, deletes and lists them with Python's own ``open`` and
+    ``os`` functions, which under ``patch()`` would be routed into the
+    active filesystem instead of the host. Each call into the state runs
+    with interception suspended for that call alone, in the calling
+    context only, so the caller's own code and other threads stay patched.
+
+    Keys are listed in full before they are handed back, since a lazy
+    iterator would reach the state again after the suspension ends. Any
+    other method the state offers (``get_many``, say) is suspended the
+    same way.
+    """
+
+    __slots__ = ("_state",)
+
+    def __init__(self, state: MutableMapping[str, Any]):
+        self._state = state
+
+    def __getitem__(self, key: str) -> Any:
+        with suspend():
+            return self._state[key]
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        with suspend():
+            self._state[key] = value
+
+    def __delitem__(self, key: str) -> None:
+        with suspend():
+            del self._state[key]
+
+    def __contains__(self, key: object) -> bool:
+        with suspend():
+            return key in self._state
+
+    def __iter__(self) -> Iterator[str]:
+        with suspend():
+            keys = list(self._state)
+        return iter(keys)
+
+    def __len__(self) -> int:
+        with suspend():
+            return len(self._state)
+
+    def keys(self) -> list[str]:  # type: ignore[override]
+        with suspend():
+            return list(self._state.keys())
+
+    def get(self, key: str, default: Any = None) -> Any:
+        with suspend():
+            return self._state.get(key, default)
+
+    def pop(self, key: str, *default: Any) -> Any:
+        with suspend():
+            return self._state.pop(key, *default)
+
+    def __getattr__(self, name: str) -> Any:
+        # Reached for "_state" itself only before it is set, as when copy
+        # or pickle builds an instance without calling __init__.
+        if name == "_state":
+            raise AttributeError(name)
+        with suspend():
+            attr = getattr(self._state, name)
+        if not callable(attr):
+            return attr
+
+        def suspended(*args: Any, **kwargs: Any) -> Any:
+            with suspend():
+                return attr(*args, **kwargs)
+
+        return suspended
 
 
 class VirtualFS:
@@ -87,7 +163,7 @@ class VirtualFS:
             max_size_mb: Maximum total size of all files in megabytes.
                 None means unlimited.
         """
-        self._state = state if state is not None else {}
+        self._state = _HostState(state if state is not None else {})
         self._dir_cache: set[str] | None = None
         # Rows read so far, keyed by canonical path. A None value is a
         # cached miss: no row, and no legacy table entry either.
