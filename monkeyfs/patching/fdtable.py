@@ -91,6 +91,10 @@ class RealFD:
     is None for a safe path, whose changes are refused. ``identity`` is
     the file's ``(st_dev, st_ino)``, since a descriptor number is reused
     once closed and the record must not govern the next file to get it.
+    ``handle`` is the file object that owns the descriptor, held weakly:
+    a file object closes its descriptor itself, not through ``os.close``,
+    so the record lives as long as the object does and no longer -- the
+    identity alone cannot tell a reopening of the same file.
 
     The change is made by path, so a file renamed after it was opened is
     changed under its old name -- whatever is there now. That is no more
@@ -100,6 +104,7 @@ class RealFD:
     fs: Any
     path: str
     identity: tuple[int, int]
+    handle: weakref.ReferenceType[Any] | None = None
 
 
 class VirtualFDTable:
@@ -217,37 +222,64 @@ class VirtualFDTable:
         with self._lock:
             self._handles.pop(fd, None)
 
-    def record_real(self, fd: int, fs: Any, path: str) -> None:
+    def record_real(self, fd: int, fs: Any, path: str, handle: Any = None) -> None:
         """Note a real descriptor handed out for ``path`` on ``fs`` (None
-        for a safe system path)."""
+        for a safe system path), owned by ``handle`` if a file object."""
         from .core import _originals
 
         st = _originals["os_fstat"](fd)
+        ref = weakref.ref(handle) if handle is not None else None
         with self._lock:
-            self._real[fd] = RealFD(fs, path, (st.st_dev, st.st_ino))
+            self._real[fd] = RealFD(fs, path, (st.st_dev, st.st_ino), ref)
 
     def real(self, fd: int) -> RealFD | None:
         """The record for a real descriptor, if it still names its file.
 
-        A record whose descriptor is closed, or now names another file,
-        is dropped: the number has been reused for something the patch
-        layer did not hand out.
+        A record is dropped once its file object is gone or closed, or
+        its descriptor is closed or now names another file: the number
+        has been reused for something the patch layer did not hand out.
         """
         from .core import _originals
 
         entry = self._real.get(fd)
         if entry is None:
             return None
+        if entry.handle is not None and not _owns(entry.handle(), fd):
+            self._drop_real(fd, entry)
+            return None
         try:
             st = _originals["os_fstat"](fd)
         except OSError:
             st = None
         if st is None or (st.st_dev, st.st_ino) != entry.identity:
-            with self._lock:
-                if self._real.get(fd) is entry:
-                    del self._real[fd]
+            self._drop_real(fd, entry)
             return None
         return entry
+
+    def adopt_real(self, fd: int, handle: Any) -> None:
+        """Give a recorded raw descriptor the file object now wrapping it
+        (``os.fdopen``), which closes it from here on."""
+        with self._lock:
+            entry = self._real.get(fd)
+            if entry is not None and entry.handle is None:
+                entry.handle = weakref.ref(handle)
+
+    def copy_real(self, fd: int, new_fd: int) -> None:
+        """Carry a descriptor's record to its duplicate (``os.dup``,
+        ``os.dup2``), or clear a stale one at the duplicate's number."""
+        if new_fd == fd:
+            return
+        entry = self.real(fd)
+        with self._lock:
+            if entry is None:
+                self._real.pop(new_fd, None)
+            else:
+                self._real[new_fd] = RealFD(entry.fs, entry.path, entry.identity)
+
+    def _drop_real(self, fd: int, entry: RealFD) -> None:
+        with self._lock:
+            if self._real.get(fd) is entry:
+                del self._real[fd]
 
     def forget_real(self, fd: int) -> None:
         """Drop the record for a real descriptor being closed."""
@@ -298,6 +330,16 @@ class VirtualFDTable:
 
         if vfd.writable:
             _write_back(vfd)
+
+
+def _owns(handle: Any, fd: int) -> bool:
+    """Whether a live, open file object still holds descriptor ``fd``."""
+    if handle is None or getattr(handle, "closed", False):
+        return False
+    try:
+        return handle.fileno() == fd
+    except (OSError, ValueError):
+        return False
 
 
 def _write_back(vfd: VirtualFD) -> None:

@@ -100,7 +100,9 @@ def _vfs_open(path: Any, *args: Any, **kwargs: Any) -> Any:
                 return _wrap_virtual_fd(fd, mode, _fd_table, **wrap_kwargs)
             else:
                 # Real fd from opener, use original fdopen
-                return _originals["open"](fd, *args, **kwargs)
+                handle = _originals["open"](fd, *args, **kwargs)
+                _fd_table.adopt_real(fd, handle)
+                return handle
 
         token = _in_vfs_operation.set(True)
         try:
@@ -130,7 +132,10 @@ def _vfs_open(path: Any, *args: Any, **kwargs: Any) -> Any:
         finally:
             _in_vfs_operation.reset(token)
 
-    return _originals["open"](path, *args, **kwargs)
+    handle = _originals["open"](path, *args, **kwargs)
+    if isinstance(path, int):
+        _fd_table.adopt_real(path, handle)
+    return handle
 
 
 def _record_route(handle: Any, fs: Any, path: str) -> Any:
@@ -153,7 +158,7 @@ def _record_real_handle(handle: Any, fs: Any, path: str) -> Any:
         return handle
     if isinstance(fd, int) and not _fd_table.is_virtual(fd):
         try:
-            _fd_table.record_real(fd, fs, path)
+            _fd_table.record_real(fd, fs, path, handle)
         except OSError:
             pass
     return handle
@@ -1374,6 +1379,21 @@ def _fd_target(fd: int, call: str) -> tuple[Any, str] | None:
             real.path,
         )
     return real.fs, real.path
+
+
+def _vfs_os_dup(fd: int) -> int:
+    """VFS-aware os.dup() replacement: the duplicate of a real descriptor
+    the patch layer handed out answers to the same filesystem."""
+    new_fd = _originals["os_dup"](fd)
+    _fd_table.copy_real(fd, new_fd)
+    return new_fd
+
+
+def _vfs_os_dup2(fd: int, fd2: int, inheritable: bool = True) -> int:
+    """VFS-aware os.dup2() replacement; see ``_vfs_os_dup``."""
+    result = _originals["os_dup2"](fd, fd2, inheritable)
+    _fd_table.copy_real(fd, fd2)
+    return result
 
 
 def _vfs_os_fchmod(fd: int, mode: int) -> None:

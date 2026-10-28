@@ -46,6 +46,8 @@ from .patches import (
     _vfs_mkdir,
     _vfs_open,
     _vfs_os_close,
+    _vfs_os_dup,
+    _vfs_os_dup2,
     _vfs_os_fchmod,
     _vfs_os_fchown,
     _vfs_os_fdatasync,
@@ -241,6 +243,8 @@ def _apply_patches() -> None:
     os.fstat = _vfs_os_fstat  # type: ignore[assignment]
     os.lseek = _vfs_os_lseek  # type: ignore[assignment]
     os.fsync = _vfs_os_fsync  # type: ignore[assignment]
+    os.dup = _vfs_os_dup  # type: ignore[assignment]
+    os.dup2 = _vfs_os_dup2  # type: ignore[assignment]
     if hasattr(os, "fdatasync"):
         os.fdatasync = _vfs_os_fdatasync  # type: ignore[assignment]
     if hasattr(os, "fchmod"):
@@ -319,6 +323,8 @@ def _apply_patches() -> None:
     _vfs_os_fstat.__name__ = "fstat"
     _vfs_os_lseek.__name__ = "lseek"
     _vfs_os_fsync.__name__ = "fsync"
+    _vfs_os_dup.__name__ = "dup"
+    _vfs_os_dup2.__name__ = "dup2"
     _vfs_os_fdatasync.__name__ = "fdatasync"
     _vfs_os_fchmod.__name__ = "fchmod"
     _vfs_os_fchown.__name__ = "fchown"
