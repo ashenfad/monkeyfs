@@ -733,6 +733,49 @@ class TestFileno:
             with pytest.raises(io.UnsupportedOperation):
                 f.fileno()
 
+    @pytest.mark.skipif(not hasattr(os, "fchmod"), reason="no os.fchmod")
+    def test_fchmod_goes_through_the_wrapper_open_went_through(self):
+        # ReadOnlyFS.open() hands back an object built on the filesystem it
+        # wraps; the descriptor must still answer to the wrapper.
+        from monkeyfs import ReadOnlyFS
+
+        chmods = []
+
+        class Backend(VirtualFS):
+            def chmod(self, path, mode):
+                chmods.append(path)
+
+        inner = Backend({})
+        inner.write("/x", b"data")
+        for fs in (
+            ReadOnlyFS(inner),
+            MountFS(VirtualFS({}), {"/ro": ReadOnlyFS(inner)}),
+        ):
+            path = "/x" if isinstance(fs, ReadOnlyFS) else "/ro/x"
+            with patch(fs):
+                with open(path, "rb") as f:
+                    with pytest.raises(PermissionError):
+                        os.fchmod(f.fileno(), 0o777)
+                    assert os.fstat(f.fileno()).st_size == 4
+        assert chmods == []
+
+    def test_fstat_names_the_file_in_the_mount_namespace(self):
+        mounted = VirtualFS({})
+        mounted.write("/x", b"mounted")
+        base = VirtualFS({})
+        base.write("/x", b"base")
+        with patch(MountFS(base, {"/m": mounted})):
+            with open("/m/x", "rb") as f:
+                assert os.fstat(f.fileno()).st_size == len(b"mounted")
+
+    def test_no_descriptor_for_an_object_opened_around_the_patch_layer(self):
+        vfs = VirtualFS({})
+        vfs.write("/x", b"data")
+        with patch(vfs):
+            with vfs.open("/x", "rb") as f:
+                with pytest.raises(io.UnsupportedOperation):
+                    f.fileno()
+
     def test_an_unclosed_handle_is_still_collected(self):
         vfs = VirtualFS({})
         with patch(vfs):
