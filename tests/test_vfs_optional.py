@@ -86,6 +86,23 @@ class TestVFSLink:
         with pytest.raises(FileNotFoundError):
             vfs.link("ghost.txt", "dst.txt")
 
+    def test_link_refuses_an_existing_destination(self):
+        vfs = VirtualFS({})
+        vfs.write("src.txt", b"payload")
+        vfs.write("dst.txt", b"occupant")
+        with pytest.raises(FileExistsError) as excinfo:
+            vfs.link("src.txt", "dst.txt")
+        assert excinfo.value.errno == errno.EEXIST
+        assert vfs.read("dst.txt") == b"occupant"
+
+    def test_link_has_the_sources_times(self):
+        vfs = VirtualFS({})
+        vfs.write("src.txt", b"payload")
+        vfs.utime("src.txt", (1_000_000.0, 1_000_000.0))
+        vfs.link("src.txt", "dst.txt")
+        src, dst = vfs.stat("src.txt"), vfs.stat("dst.txt")
+        assert (dst.created_at, dst.modified_at) == (src.created_at, src.modified_at)
+
 
 # ---------------------------------------------------------------------------
 # truncate
