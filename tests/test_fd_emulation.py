@@ -1,5 +1,6 @@
 """Tests for low-level fd emulation (os.open, os.read, os.write, etc.)."""
 
+import datetime
 import os
 import sys
 import tempfile
@@ -451,3 +452,93 @@ class TestThreadSafety:
         assert len(set(fds)) == 10  # All fds unique
         for i in range(10):
             assert vfs.read(f"/t{i}.txt") == f"thread {i}".encode()
+
+
+class TestWorkingDirectory:
+    """An fd names the file it was opened on from any working directory."""
+
+    @pytest.fixture
+    def vfs(self):
+        vfs = VirtualFS({})
+        vfs.makedirs("/work")
+        vfs.chdir("/work")
+        return vfs
+
+    def test_create_absolute(self, vfs):
+        with patch(vfs):
+            fd = os.open("/work/x", os.O_WRONLY | os.O_CREAT, 0o600)
+            os.write(fd, b"data")
+            os.close(fd)
+            assert os.path.exists("/work/x")
+        assert vfs.read("/work/x") == b"data"
+        assert not vfs.exists("/work/work/x")
+
+    def test_create_relative(self, vfs):
+        with patch(vfs):
+            fd = os.open("sub/x", os.O_WRONLY | os.O_CREAT, 0o600)
+            os.write(fd, b"data")
+            os.close(fd)
+        assert vfs.read("/work/sub/x") == b"data"
+        assert not vfs.exists("/work/work/sub/x")
+
+    def test_open_existing(self, vfs):
+        vfs.write("/work/x", b"before")
+        with patch(vfs):
+            fd = os.open("/work/x", os.O_RDONLY)
+            assert os.read(fd, 100) == b"before"
+            os.close(fd)
+
+    def test_append_existing(self, vfs):
+        vfs.write("/work/x", b"before")
+        with patch(vfs):
+            fd = os.open("/work/x", os.O_WRONLY | os.O_APPEND)
+            os.write(fd, b"+after")
+            os.close(fd)
+        assert vfs.read("/work/x") == b"before+after"
+
+    def test_excl_refuses_existing(self, vfs):
+        vfs.write("/work/x", b"before")
+        with patch(vfs):
+            with pytest.raises(FileExistsError):
+                os.open("/work/x", os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+
+    def test_fstat_sees_the_file(self, vfs):
+        vfs.write("/work/x", b"before")
+        modified = vfs.stat("/work/x").modified_at
+        with patch(vfs):
+            fd = os.open("/work/x", os.O_RDONLY)
+            st = os.fstat(fd)
+            os.close(fd)
+        assert st.st_size == 6
+        assert st.st_mtime == pytest.approx(
+            datetime.datetime.fromisoformat(modified).timestamp()
+        )
+
+    def test_gettempdir_finds_the_working_directory(self, vfs, monkeypatch):
+        # tempfile probes each candidate by creating a file with os.open and
+        # unlinking it by name; a probe that lands elsewhere rejects them all.
+        monkeypatch.setenv("TMPDIR", "/work")
+        monkeypatch.setattr(tempfile, "tempdir", None)
+        with patch(vfs):
+            assert tempfile.gettempdir() == "/work"
+            fd, path = tempfile.mkstemp()
+            os.write(fd, b"temp")
+            os.close(fd)
+            assert os.path.exists(path)
+        assert vfs.read(path) == b"temp"
+
+    def test_backend_without_resolve_path(self, vfs):
+        class NoResolve:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def __getattr__(self, name):
+                if name == "resolve_path":
+                    raise AttributeError(name)
+                return getattr(self._inner, name)
+
+        with patch(NoResolve(vfs)):
+            fd = os.open("x", os.O_WRONLY | os.O_CREAT, 0o600)
+            os.write(fd, b"data")
+            os.close(fd)
+        assert vfs.read("/work/x") == b"data"
