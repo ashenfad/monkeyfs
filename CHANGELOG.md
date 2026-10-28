@@ -5,16 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.9] - 2026-10-27
 
 ### Added
-- **`os.fsync`, `os.fdatasync` and `os.fchmod` work on virtual descriptors** (ashenfad/nontainer#292). A sync saves the descriptor's writes through the backend's `write()` and keeps it open; they reached the OS before and failed with `EBADF`.
-- **`fileno()` on monkeyfs's own file objects gives a descriptor under `patch()`.** It works with the calls above, plus `os.fstat` and `os.close`; anything that hands it to the kernel (`mmap`, a C library) gets `EBADF` where it got `io.UnsupportedOperation`. Outside `patch()` it still raises `io.UnsupportedOperation`.
+- **`os.fsync`, `os.fdatasync` and `os.fchmod` work on virtual descriptors** (ashenfad/nontainer#292, #53). A sync saves the descriptor's writes through the backend's `write()` and keeps it open; they reached the OS before and failed with `EBADF`.
+- **`fileno()` on monkeyfs's own file objects gives a descriptor under `patch()`** (#53). It works with the calls above, plus `os.fstat` and `os.close`; anything that hands it to the kernel (`mmap`, a C library) gets `EBADF` where it got `io.UnsupportedOperation`. Outside `patch()` it still raises `io.UnsupportedOperation`.
 
 ### Fixed
-- **`os.fchmod` and `os.fchown` through a real descriptor answer to the filesystem**. A read of a safe system path, and a backend's real file objects (`IsolatedFS`), hand out kernel descriptors, and these calls through one changed the host file directly: a site-packages file's mode under any `patch()`, or a file under `ReadOnlyFS(IsolatedFS(...))`. A safe-path descriptor now refuses them with `EROFS`, and a backend's goes through its filesystem's `chmod`/`chown`. A duplicate from `os.dup`/`os.dup2` answers the same way. Raw syscalls on the descriptor (ctypes, C extensions) are not covered.
-- **`VirtualFS.link` answers like link(2)** (ashenfad/nontainer#292). An existing destination is `FileExistsError` rather than overwritten, and the new name keeps the source's times.
-- **`os.open` names the right file from a working directory other than `/`** (ashenfad/nontainer#292). The fd table kept `VirtualFS`'s slashless key form of the path and resolved it against the working directory again, so from `/work` a file created as `/work/x` landed at `/work/work/x`, an existing one was not found, and `tempfile` found no usable temporary directory.
+- **`os.fchmod` and `os.fchown` through a real descriptor answer to the filesystem** (#54). A read of a safe system path, and a backend's real file objects (`IsolatedFS`), hand out kernel descriptors, and these calls through one changed the host file directly: a site-packages file's mode under any `patch()`, or a file under `ReadOnlyFS(IsolatedFS(...))`. A safe-path descriptor now refuses them with `EROFS`, and a backend's goes through its filesystem's `chmod`/`chown`. A duplicate from `os.dup`/`os.dup2` answers the same way. Raw syscalls on the descriptor (ctypes, C extensions) are not covered.
+- **`VirtualFS.link` answers like link(2)** (ashenfad/nontainer#292, #53). An existing destination is `FileExistsError` rather than overwritten, and the new name keeps the source's times.
+- **`os.open` names the right file from a working directory other than `/`** (ashenfad/nontainer#292, #52). The fd table kept `VirtualFS`'s slashless key form of the path and resolved it against the working directory again, so from `/work` a file created as `/work/x` landed at `/work/work/x`, an existing one was not found, and `tempfile` found no usable temporary directory.
 
 ## [0.2.8] - 2026-10-16
 
