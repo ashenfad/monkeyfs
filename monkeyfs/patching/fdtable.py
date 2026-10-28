@@ -76,6 +76,32 @@ class HandleFD:
     handle: weakref.ReferenceType[Any]
 
 
+@dataclass
+class RealFD:
+    """What the patch layer knows about a real descriptor it handed out.
+
+    A read of a safe system path passes through to the host, and a
+    backend with real files (``IsolatedFS``) answers ``open()`` with a
+    real file object, so a real kernel descriptor reaches the caller
+    either way. A call that changes metadata through it -- ``os.fchmod``,
+    ``os.fchown`` -- goes straight to the kernel, past whatever the
+    filesystem would have said to the same change by path: ``ReadOnlyFS``
+    refuses a chmod, and a safe path is there to be read. ``fs`` and
+    ``path`` are where the patch layer sends those calls instead; ``fs``
+    is None for a safe path, whose changes are refused. ``identity`` is
+    the file's ``(st_dev, st_ino)``, since a descriptor number is reused
+    once closed and the record must not govern the next file to get it.
+
+    The change is made by path, so a file renamed after it was opened is
+    changed under its old name -- whatever is there now. That is no more
+    than ``os.chmod`` on the path would do, which the filesystem allows.
+    """
+
+    fs: Any
+    path: str
+    identity: tuple[int, int]
+
+
 class VirtualFDTable:
     """Thread-safe virtual file descriptor table.
 
@@ -89,6 +115,7 @@ class VirtualFDTable:
         self._lock = threading.Lock()
         self._table: dict[int, VirtualFD] = {}
         self._handles: dict[int, HandleFD] = {}
+        self._real: dict[int, RealFD] = {}
         self._next_fd = self._BASE_FD
 
     def allocate(self, path: str, fs: Any, flags: int, file_mode: int) -> int:
@@ -189,6 +216,43 @@ class VirtualFDTable:
         """Drop a file object's descriptor; a no-op if it is already gone."""
         with self._lock:
             self._handles.pop(fd, None)
+
+    def record_real(self, fd: int, fs: Any, path: str) -> None:
+        """Note a real descriptor handed out for ``path`` on ``fs`` (None
+        for a safe system path)."""
+        from .core import _originals
+
+        st = _originals["os_fstat"](fd)
+        with self._lock:
+            self._real[fd] = RealFD(fs, path, (st.st_dev, st.st_ino))
+
+    def real(self, fd: int) -> RealFD | None:
+        """The record for a real descriptor, if it still names its file.
+
+        A record whose descriptor is closed, or now names another file,
+        is dropped: the number has been reused for something the patch
+        layer did not hand out.
+        """
+        from .core import _originals
+
+        entry = self._real.get(fd)
+        if entry is None:
+            return None
+        try:
+            st = _originals["os_fstat"](fd)
+        except OSError:
+            st = None
+        if st is None or (st.st_dev, st.st_ino) != entry.identity:
+            with self._lock:
+                if self._real.get(fd) is entry:
+                    del self._real[fd]
+            return None
+        return entry
+
+    def forget_real(self, fd: int) -> None:
+        """Drop the record for a real descriptor being closed."""
+        with self._lock:
+            self._real.pop(fd, None)
 
     def sync(self, fd: int) -> None:
         """Persist what a descriptor has written, keeping it open.
