@@ -1476,9 +1476,22 @@ class VirtualFS:
         return self.exists(path)
 
     def link(self, src: str, dst: str) -> None:
-        """Create a hard link (copies content in VFS)."""
+        """Create a hard link (copies content in VFS).
+
+        A copy, but it answers the way link(2) does where a caller can
+        tell: an existing destination is ``FileExistsError`` rather than
+        overwritten, and the new name has the source's times, since a
+        hard link is the same file under a second name. Atomic savers
+        such as openpyxl's lean on both, linking a temp file into place
+        and checking that what landed is what they wrote.
+        """
         content = self.read(src)
+        if self.exists(dst):
+            raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), dst)
+        meta = self._meta_get(src)
         self.write(dst, content)
+        if meta is not None:
+            self._meta_set(dst, meta)
 
     def truncate(self, path: str, length: int) -> None:
         """Truncate file to given length."""
