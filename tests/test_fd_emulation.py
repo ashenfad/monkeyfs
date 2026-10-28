@@ -915,10 +915,71 @@ class TestRealDescriptors:
                 os.fchmod(f.fileno(), 0o600)
         assert self._mode(tmp_path / "x") == 0o600
 
+    def test_a_duplicate_answers_like_the_original(self, safe_file, tmp_path):
+        from monkeyfs import IsolatedFS, ReadOnlyFS
+
+        (tmp_path / "x").write_text("data")
+        (tmp_path / "x").chmod(0o644)
+        with patch(ReadOnlyFS(IsolatedFS(str(tmp_path)))):
+            with open("/x", "rb") as f:
+                dup = os.dup(f.fileno())
+                try:
+                    with pytest.raises(PermissionError):
+                        os.fchmod(dup, 0o666)
+                finally:
+                    os.close(dup)
+        spare = os.open(tmp_path / "x", os.O_RDONLY)
+        try:
+            with patch(VirtualFS({})):
+                with open(safe_file, "rb") as f:
+                    os.dup2(f.fileno(), spare)
+                    with pytest.raises(OSError) as excinfo:
+                        os.fchmod(spare, 0o666)
+                    assert excinfo.value.errno == errno.EROFS
+        finally:
+            os.close(spare)
+        assert self._mode(tmp_path / "x") == 0o644
+        assert self._mode(safe_file) == 0o644
+
+    def test_dup2_over_a_recorded_number_clears_it(self, safe_file, tmp_path):
+        host = tmp_path / "host"
+        host.write_text("z")
+        host.chmod(0o644)
+        unmanaged = os.open(host, os.O_RDONLY)
+        try:
+            with patch(VirtualFS({})):
+                fd = os.open(safe_file, os.O_RDONLY)
+                os.dup2(unmanaged, fd)
+                os.fchmod(fd, 0o600)
+                os.close(fd)
+        finally:
+            os.close(unmanaged)
+        assert self._mode(host) == 0o600
+
+    @pytest.mark.parametrize("how", ["open", "fdopen"])
+    def test_a_closed_file_objects_record_goes_with_it(self, safe_file, how):
+        # A file object closes its descriptor itself, not through os.close.
+        # Host code reopening the same file -- the same inode, often the same
+        # number -- must not inherit the refusal.
+        with patch(VirtualFS({})):
+            if how == "open":
+                f = open(safe_file, "rb")
+            else:
+                f = os.fdopen(os.open(safe_file, os.O_RDONLY), "rb")
+            fd = f.fileno()
+            f.close()
+        reopened = os.open(safe_file, os.O_RDONLY)
+        try:
+            if reopened != fd:
+                pytest.skip("the OS did not reuse the descriptor number")
+            with patch(VirtualFS({})):
+                os.fchmod(reopened, 0o600)
+        finally:
+            os.close(reopened)
+        assert self._mode(safe_file) == 0o600
+
     def test_a_reused_number_is_not_governed(self, safe_file, tmp_path):
-        # The safe file's handle is closed by its file object, not os.close,
-        # so its record outlives it; the next file to get the number must not
-        # inherit the refusal.
+        # The next file to get a recorded number must not inherit the refusal.
         other = tmp_path / "other"
         other.write_text("y")
         other.chmod(0o644)

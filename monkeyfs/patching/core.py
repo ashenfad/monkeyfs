@@ -65,6 +65,8 @@ _originals: dict[str, Any] = {
     "os_fstat": os.fstat,
     "os_lseek": os.lseek,
     "os_fsync": os.fsync,
+    "os_dup": os.dup,
+    "os_dup2": os.dup2,
     **({"os_fdatasync": os.fdatasync} if hasattr(os, "fdatasync") else {}),
     **({"os_fchmod": os.fchmod} if hasattr(os, "fchmod") else {}),
     **({"os_fchown": os.fchown} if hasattr(os, "fchown") else {}),
