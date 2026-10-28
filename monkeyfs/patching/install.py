@@ -46,7 +46,10 @@ from .patches import (
     _vfs_mkdir,
     _vfs_open,
     _vfs_os_close,
+    _vfs_os_fchmod,
+    _vfs_os_fdatasync,
     _vfs_os_fstat,
+    _vfs_os_fsync,
     _vfs_os_lseek,
     _vfs_os_open,
     _vfs_os_read,
@@ -236,6 +239,11 @@ def _apply_patches() -> None:
     os.close = _vfs_os_close  # type: ignore[assignment]
     os.fstat = _vfs_os_fstat  # type: ignore[assignment]
     os.lseek = _vfs_os_lseek  # type: ignore[assignment]
+    os.fsync = _vfs_os_fsync  # type: ignore[assignment]
+    if hasattr(os, "fdatasync"):
+        os.fdatasync = _vfs_os_fdatasync  # type: ignore[assignment]
+    if hasattr(os, "fchmod"):
+        os.fchmod = _vfs_os_fchmod  # type: ignore[assignment]
 
     # Patch pathlib.Path.touch
     Path.touch = _vfs_touch  # type: ignore[assignment]
@@ -307,6 +315,9 @@ def _apply_patches() -> None:
     _vfs_os_close.__name__ = "close"
     _vfs_os_fstat.__name__ = "fstat"
     _vfs_os_lseek.__name__ = "lseek"
+    _vfs_os_fsync.__name__ = "fsync"
+    _vfs_os_fdatasync.__name__ = "fdatasync"
+    _vfs_os_fchmod.__name__ = "fchmod"
 
     # Patch pathlib's internal accessor (Python < 3.11, i.e. 3.10).
     #

@@ -1,6 +1,9 @@
 """Tests for low-level fd emulation (os.open, os.read, os.write, etc.)."""
 
 import datetime
+import errno
+import gc
+import io
 import os
 import sys
 import tempfile
@@ -558,3 +561,240 @@ class TestWorkingDirectory:
             fd = os.open("//data/x", os.O_RDONLY)
             assert os.read(fd, 100) == expected
             os.close(fd)
+
+
+class TestSync:
+    """os.fsync / os.fdatasync save a virtual descriptor's writes now."""
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "fsync",
+            pytest.param(
+                "fdatasync",
+                marks=pytest.mark.skipif(
+                    not hasattr(os, "fdatasync"), reason="no os.fdatasync"
+                ),
+            ),
+        ],
+    )
+    def test_os_open_fd_is_saved_before_close(self, name):
+        vfs = VirtualFS({})
+        with patch(vfs):
+            # Looked up inside patch(): the first patch() installs the shims.
+            sync = getattr(os, name)
+            fd = os.open("/x", os.O_WRONLY | os.O_CREAT, 0o600)
+            os.write(fd, b"saved")
+            sync(fd)
+            assert vfs.read("/x") == b"saved"
+            os.write(fd, b"+more")
+            os.close(fd)
+        assert vfs.read("/x") == b"saved+more"
+
+    def test_fdopen_flush_then_fsync(self):
+        # openpyxl's path save: mkstemp, fdopen, write, flush, fsync.
+        vfs = VirtualFS({})
+        with patch(vfs):
+            fd, path = tempfile.mkstemp(dir="/")
+            with os.fdopen(fd, "wb") as f:
+                f.write(b"archive")
+                f.flush()
+                os.fsync(f.fileno())
+                assert vfs.read(path) == b"archive"
+
+    def test_read_only_fd_has_nothing_to_save(self):
+        vfs = VirtualFS({})
+        vfs.write("/x", b"data")
+        with patch(vfs):
+            fd = os.open("/x", os.O_RDONLY)
+            os.fsync(fd)
+            os.close(fd)
+        assert vfs.read("/x") == b"data"
+
+    def test_accepts_an_object_with_fileno(self):
+        vfs = VirtualFS({})
+        with patch(vfs):
+            fd = os.open("/x", os.O_WRONLY | os.O_CREAT, 0o600)
+            with os.fdopen(fd, "wb") as f:
+                f.write(b"data")
+                f.flush()
+                os.fsync(f)
+                assert vfs.read("/x") == b"data"
+
+    def test_real_fd_reaches_the_os(self, tmp_path):
+        host = tmp_path / "real.bin"
+        real = os.open(host, os.O_WRONLY | os.O_CREAT, 0o600)
+        try:
+            with patch(VirtualFS({})):
+                os.fsync(real)
+                with pytest.raises(OSError) as excinfo:
+                    os.fsync(999_999)
+                assert excinfo.value.errno == errno.EBADF
+        finally:
+            os.close(real)
+
+    @pytest.mark.skipif(not hasattr(os, "fchmod"), reason="no os.fchmod")
+    def test_fchmod_is_chmod_on_the_file(self, tmp_path):
+        # docx's save fchmods its temp descriptor to the destination's mode.
+        from monkeyfs import IsolatedFS
+
+        fs = IsolatedFS(str(tmp_path))
+        with patch(fs):
+            fd = os.open("/x", os.O_WRONLY | os.O_CREAT, 0o600)
+            os.fchmod(fd, 0o640)
+            os.close(fd)
+        assert (tmp_path / "x").stat().st_mode & 0o777 == 0o640
+
+
+class TestFileno:
+    """fileno() on monkeyfs's own file objects, under patch()."""
+
+    def test_write_handle_fsync_saves_and_stays_open(self):
+        vfs = VirtualFS({})
+        with patch(vfs):
+            f = open("/x", "wb")
+            f.write(b"first")
+            os.fsync(f.fileno())
+            assert vfs.read("/x") == b"first"
+            f.write(b"+second")
+            f.close()
+        assert vfs.read("/x") == b"first+second"
+
+    def test_text_handle(self):
+        vfs = VirtualFS({})
+        with patch(vfs):
+            with open("/x.txt", "w") as f:
+                f.write("héllo")
+                os.fsync(f.fileno())
+                assert vfs.read("/x.txt") == "héllo".encode()
+
+    def test_read_handle_fsync(self):
+        # docx and pptx: `with open(temp, "rb") as s: os.fsync(s.fileno())`.
+        vfs = VirtualFS({})
+        vfs.write("/x", b"data")
+        with patch(vfs):
+            with open("/x", "rb") as f:
+                os.fsync(f.fileno())
+                assert f.read() == b"data"
+
+    def test_fstat_reports_the_size_to_be_saved(self):
+        vfs = VirtualFS({})
+        vfs.write("/r", b"12345")
+        with patch(vfs):
+            with open("/w", "wb") as f:
+                f.write(b"abc")
+                assert os.fstat(f.fileno()).st_size == 3
+            with open("/r", "rb") as f:
+                assert os.fstat(f.fileno()).st_size == 5
+
+    def test_same_number_until_close_releases_it(self):
+        vfs = VirtualFS({})
+        with patch(vfs):
+            f = open("/x", "wb")
+            fd = f.fileno()
+            assert f.fileno() == fd
+            f.close()
+            with pytest.raises(OSError) as excinfo:
+                os.fsync(fd)
+            assert excinfo.value.errno == errno.EBADF
+
+    def test_os_close_releases_the_number_and_not_the_file(self):
+        vfs = VirtualFS({})
+        with patch(vfs):
+            with open("/x", "wb") as f:
+                fd = f.fileno()
+                os.close(fd)
+                f.write(b"still open")
+                assert f.fileno() != fd
+        assert vfs.read("/x") == b"still open"
+
+    def test_raw_io_on_the_number_is_refused(self):
+        vfs = VirtualFS({})
+        vfs.write("/x", b"data")
+        with patch(vfs):
+            with open("/x", "rb") as f:
+                fd = f.fileno()
+                for call in (
+                    lambda: os.read(fd, 1),
+                    lambda: os.write(fd, b"x"),
+                    lambda: os.lseek(fd, 0, os.SEEK_SET),
+                ):
+                    with pytest.raises(OSError) as excinfo:
+                        call()
+                    assert excinfo.value.errno == errno.EBADF
+
+    def test_unsupported_outside_patch(self):
+        vfs = VirtualFS({})
+        vfs.write("/x", b"data")
+        with vfs.open("/x", "rb") as f:
+            with pytest.raises(io.UnsupportedOperation):
+                f.fileno()
+        with vfs.open("/y", "wb") as f:
+            with pytest.raises(io.UnsupportedOperation):
+                f.fileno()
+
+    def test_an_unclosed_handle_is_still_collected(self):
+        vfs = VirtualFS({})
+        with patch(vfs):
+            f = open("/x", "wb")
+            f.write(b"data")
+            fd = f.fileno()
+            with pytest.warns(ResourceWarning):
+                del f
+                gc.collect()
+            assert vfs.read("/x") == b"data"
+            with pytest.raises(OSError) as excinfo:
+                os.fsync(fd)
+            assert excinfo.value.errno == errno.EBADF
+
+
+class TestAtomicSave:
+    """The temp-file-and-replace saves of docx, pptx and openpyxl."""
+
+    @pytest.fixture
+    def vfs(self):
+        vfs = VirtualFS({})
+        vfs.makedirs("/work")
+        vfs.chdir("/work")
+        return vfs
+
+    def test_mkstemp_fsync_replace(self, vfs):
+        vfs.write("/work/doc.bin", b"old")
+        with patch(vfs):
+            fd, temp = tempfile.mkstemp(dir="/work", suffix=".partial")
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o644)
+            os.close(fd)
+            with open(temp, "wb") as f:
+                f.write(b"new")
+            with open(temp, "rb") as staged:
+                os.fsync(staged.fileno())
+            os.replace(temp, "doc.bin")
+            assert not os.path.exists(temp)
+        assert vfs.read("/work/doc.bin") == b"new"
+
+    def test_link_into_a_new_destination(self, vfs):
+        with patch(vfs):
+            fd, temp = tempfile.mkstemp(dir="/work")
+            with os.fdopen(fd, "wb") as f:
+                f.write(b"book")
+                f.flush()
+                os.fsync(f.fileno())
+            before = os.stat(temp)
+            os.link(temp, "/work/book.bin")
+            os.unlink(temp)
+            after = os.stat("/work/book.bin")
+        assert (after.st_size, after.st_mtime_ns) == (
+            before.st_size,
+            before.st_mtime_ns,
+        )
+        assert vfs.read("/work/book.bin") == b"book"
+
+    def test_link_refuses_an_occupied_destination(self, vfs):
+        vfs.write("/work/book.bin", b"someone else's")
+        with patch(vfs):
+            fd, temp = tempfile.mkstemp(dir="/work")
+            os.close(fd)
+            with pytest.raises(FileExistsError):
+                os.link(temp, "/work/book.bin")
+        assert vfs.read("/work/book.bin") == b"someone else's"

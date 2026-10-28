@@ -236,7 +236,8 @@ class TestStreamSemantics:
             handle.write(b"no")
 
     def test_fileno_is_unsupported_rather_than_wrong(self, handle):
-        """Readers probe for a descriptor and accept not having one."""
+        """Outside patch() no fd call would accept a descriptor, so there is
+        none to give; readers probe for one and accept not having one."""
         with pytest.raises(io.UnsupportedOperation):
             handle.fileno()
 

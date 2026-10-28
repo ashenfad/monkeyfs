@@ -89,9 +89,9 @@ class LazyBinaryFile(io.RawIOBase):
     read is not a cache.
 
     The length of the file comes from ``stat()``, never from reading it, so
-    ``seek(-65536, os.SEEK_END)`` costs nothing. ``fileno()`` raises
-    ``io.UnsupportedOperation``: there is no file descriptor behind this, and
-    readers that ask are prepared for that answer.
+    ``seek(-65536, os.SEEK_END)`` costs nothing. ``fileno()`` gives a
+    descriptor only while ``patch()`` is active (see ``_fileno``) and raises
+    ``io.UnsupportedOperation`` otherwise.
 
     The file is read as it is now, not as it was at open: a block that has
     not been fetched yet comes from the backend when it is reached. Nothing
@@ -212,10 +212,16 @@ class LazyBinaryFile(io.RawIOBase):
                 break
         return bytes(line)
 
+    def fileno(self) -> int:
+        """A descriptor for the patched fd calls; see ``_fileno``."""
+        self._ensure_open()
+        return _fileno(self)
+
     def close(self) -> None:
         """Close the stream and drop the cached blocks."""
         if not self.closed:
             self._blocks.clear()
+            _release_fileno(self)
         super().close()
 
     # -- internals --
@@ -423,29 +429,49 @@ class VirtualFile:
         """Flush is a no-op (content persisted on close)."""
         pass
 
+    def fileno(self) -> int:
+        """A descriptor for the patched fd calls; see ``_fileno``.
+
+        ``os.fsync`` on it saves the buffer now, as ``close`` would, and
+        keeps the file open.
+        """
+        if self._closed:
+            raise ValueError(f"I/O operation on closed file: {self._path}")
+        return _fileno(self)
+
+    def _content(self) -> bytes:
+        content = self._buffer.getvalue()
+        return content.encode("utf-8") if isinstance(content, str) else content
+
+    def _buffered_size(self) -> int:
+        """The size the file will have when saved, for ``os.fstat``."""
+        return len(self._content())
+
+    def _sync(self) -> None:
+        """Save the buffer if it has changed, keeping the file open."""
+        if self._dirty:
+            # Through the filesystem's own write(), so that whatever
+            # metadata it tracks is updated the way a direct write would
+            # update it.
+            self._fs.write(self._path, self._content())
+            self._dirty = False
+
     def close(self) -> None:
         """Close the file and persist content through the filesystem's write()."""
         if self._closed:
             return
 
-        if self._dirty:
-            try:
-                content = self._buffer.getvalue()
-                if isinstance(content, str):
-                    content = content.encode("utf-8")
-
-                # Through the filesystem's own write(), so that whatever
-                # metadata it tracks is updated the way a direct write would
-                # update it.
-                self._fs.write(self._path, content)
-            except BaseException:
-                # The caller has been told about this content; a finalizer
-                # that fails to save it again has nothing new to report,
-                # until the buffer changes.
-                self._close_raised = True
-                raise
+        try:
+            self._sync()
+        except BaseException:
+            # The caller has been told about this content; a finalizer
+            # that fails to save it again has nothing new to report,
+            # until the buffer changes.
+            self._close_raised = True
+            raise
 
         self._closed = True
+        _release_fileno(self)
 
     def __del__(
         self,
@@ -502,6 +528,45 @@ class VirtualFile:
 
     def __exit__(self, *args: object) -> None:
         self.close()
+
+
+def _fileno(handle: Any) -> int:
+    """The descriptor ``fileno()`` returns for a file object monkeyfs built.
+
+    There is no kernel file behind these objects, so the descriptor is
+    one of the patch layer's: the patched ``os.fsync``, ``os.fdatasync``,
+    ``os.fstat``, ``os.fchmod`` and ``os.close`` accept it, and a call
+    that reaches the OS with it gets ``EBADF``. Outside ``patch()`` none
+    of those calls are patched, so there is no descriptor to give and
+    this raises ``io.UnsupportedOperation``, as it always did. The same
+    object returns the same number until ``os.close`` releases it.
+    """
+    from .context import current_fs
+    from .patching.fdtable import _fd_table
+
+    if current_fs.get() is None:
+        raise io.UnsupportedOperation("fileno")
+    fd = getattr(handle, "_descriptor", None)
+    if fd is not None:
+        entry = _fd_table.get_handle(fd)
+        if entry is not None and entry.handle() is handle:
+            return fd
+    fd = _fd_table.allocate_handle(handle, handle._fs, handle._path)
+    handle._descriptor = fd
+    return fd
+
+
+def _release_fileno(handle: Any) -> None:
+    """Drop the descriptor ``fileno()`` gave a closing file object."""
+    fd = getattr(handle, "_descriptor", None)
+    if fd is None:
+        return
+    handle._descriptor = None
+    from .patching.fdtable import _fd_table
+
+    entry = _fd_table.get_handle(fd)
+    if entry is not None and entry.handle() is handle:
+        _fd_table.release_handle(fd)
 
 
 def _read_or_none(fs: Any, path: str) -> bytes | None:

@@ -1239,30 +1239,41 @@ def _vfs_os_fstat(fd: int) -> Any:
     """VFS-aware os.fstat() replacement."""
     vfd = _fd_table.get(fd)
     if vfd is not None:
-        size = len(vfd.buffer.getvalue())
-        try:
-            meta = vfd.fs.stat(vfd.path)
-            # Override size with current buffer size (may differ from persisted)
-            from ..base import FileMetadata
-
-            updated = FileMetadata(
-                size=size,
-                created_at=meta.created_at,
-                modified_at=meta.modified_at,
-                is_dir=meta.is_dir,
-            )
-            return _metadata_to_stat_result(updated)
-        except FileNotFoundError:
-            # File not yet persisted — synthesize minimal stat
-            from datetime import datetime, timezone
-
-            from ..base import FileMetadata
-
-            now = datetime.now(timezone.utc).isoformat()
-            return _metadata_to_stat_result(
-                FileMetadata(size=size, created_at=now, modified_at=now)
-            )
+        return _fd_stat(vfd.fs, vfd.path, len(vfd.buffer.getvalue()))
+    entry = _fd_table.get_handle(fd)
+    if entry is not None:
+        handle = entry.handle()
+        if handle is None:
+            raise OSError(errno.EBADF, "Bad file descriptor")
+        # A file object with unsaved writes is the size it will be saved at;
+        # a reader is the size the filesystem reports.
+        buffered = getattr(handle, "_buffered_size", None)
+        return _fd_stat(entry.fs, entry.path, buffered() if buffered else None)
     return _originals["os_fstat"](fd)
+
+
+def _fd_stat(fs: Any, path: str, size: int | None) -> Any:
+    """The stat result for a virtual descriptor's file, at ``size`` if given."""
+    from ..base import FileMetadata
+
+    try:
+        meta = fs.stat(path)
+        # Override size with current buffer size (may differ from persisted)
+        updated = FileMetadata(
+            size=meta.size if size is None else size,
+            created_at=meta.created_at,
+            modified_at=meta.modified_at,
+            is_dir=meta.is_dir,
+        )
+        return _metadata_to_stat_result(updated)
+    except FileNotFoundError:
+        # File not yet persisted — synthesize minimal stat
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc).isoformat()
+        return _metadata_to_stat_result(
+            FileMetadata(size=size or 0, created_at=now, modified_at=now)
+        )
 
 
 def _vfs_os_lseek(fd: int, offset: int, whence: int) -> int:
@@ -1271,3 +1282,42 @@ def _vfs_os_lseek(fd: int, offset: int, whence: int) -> int:
     if vfd is not None:
         return vfd.buffer.seek(offset, whence)
     return _originals["os_lseek"](fd, offset, whence)
+
+
+def _as_fd(fd: Any) -> Any:
+    """An fd argument as os.fsync() takes it: an int, or an object with
+    ``fileno()``."""
+    return fd if isinstance(fd, int) else fd.fileno()
+
+
+def _vfs_os_fsync(fd: Any) -> None:
+    """VFS-aware os.fsync() replacement.
+
+    A virtual descriptor's writes are saved through the filesystem's
+    ``write()`` and the descriptor stays open, which is what fsync asks of
+    a real one: the data reaches the store before the call returns. How
+    durable the store is from there is the store's own business.
+    """
+    fd = _as_fd(fd)
+    if _fd_table.is_virtual(fd):
+        _fd_table.sync(fd)
+        return
+    _originals["os_fsync"](fd)
+
+
+def _vfs_os_fdatasync(fd: Any) -> None:
+    """VFS-aware os.fdatasync() replacement; the same save as os.fsync()."""
+    fd = _as_fd(fd)
+    if _fd_table.is_virtual(fd):
+        _fd_table.sync(fd)
+        return
+    _originals["os_fdatasync"](fd)
+
+
+def _vfs_os_fchmod(fd: int, mode: int) -> None:
+    """VFS-aware os.fchmod() replacement: os.chmod() on the descriptor's
+    file."""
+    entry = _fd_table.entry(fd)
+    if entry is not None:
+        return _require(entry.fs, "chmod")(entry.path, mode)
+    return _originals["os_fchmod"](fd, mode)
