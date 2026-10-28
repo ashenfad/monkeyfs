@@ -118,6 +118,8 @@ class LazyBinaryFile(io.RawIOBase):
         self._size = fs.stat(path).size
         self._pos = 0
         self._blocks: OrderedDict[int, bytes] = OrderedDict()
+        # (filesystem, absolute path) the patched open() went through.
+        self._route: tuple[Any, str] | None = None
 
     # -- stream capabilities --
 
@@ -303,6 +305,8 @@ class VirtualFile:
         self._path = path
         self._mode = mode
         self._closed = False
+        # (filesystem, absolute path) the patched open() went through.
+        self._route: tuple[Any, str] | None = None
 
         # A truncating mode replaces the file, so its current content is not
         # worth fetching: on a backend where a read crosses a wire, asking
@@ -540,18 +544,27 @@ def _fileno(handle: Any) -> int:
     of those calls are patched, so there is no descriptor to give and
     this raises ``io.UnsupportedOperation``, as it always did. The same
     object returns the same number until ``os.close`` releases it.
+
+    The descriptor names the file through the filesystem the patched
+    ``open()`` went through (its ``_route``), as an ``os.open``
+    descriptor does, not through the object's own backend: a wrapper
+    such as ``ReadOnlyFS`` hands back an object built on the filesystem
+    it wraps, and ``os.fchmod`` on that would skip the wrapper's
+    refusal. An object opened some other way has no route, and no
+    descriptor.
     """
     from .context import current_fs
     from .patching.fdtable import _fd_table
 
-    if current_fs.get() is None:
+    route = getattr(handle, "_route", None)
+    if current_fs.get() is None or route is None:
         raise io.UnsupportedOperation("fileno")
     fd = getattr(handle, "_descriptor", None)
     if fd is not None:
         entry = _fd_table.get_handle(fd)
         if entry is not None and entry.handle() is handle:
             return fd
-    fd = _fd_table.allocate_handle(handle, handle._fs, handle._path)
+    fd = _fd_table.allocate_handle(handle, *route)
     handle._descriptor = fd
     return fd
 

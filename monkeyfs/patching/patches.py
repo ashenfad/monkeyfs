@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from ..context import current_fs
-from ..virtualfile import open_file
+from ..virtualfile import LazyBinaryFile, VirtualFile, open_file
 from .core import (
     _fs_islink,
     _fs_list,
@@ -22,7 +22,7 @@ from .core import (
     _require,
     _symlink_stat_result,
 )
-from .fdtable import _fd_table, _wrap_virtual_fd
+from .fdtable import _absolute_path, _fd_table, _wrap_virtual_fd
 
 # Default for every optional keyword the shims accept but do not themselves
 # need a value for. It marks "the caller did not supply this", which is not the
@@ -111,8 +111,10 @@ def _vfs_open(path: Any, *args: Any, **kwargs: Any) -> Any:
             # never heard of Python file objects still answers open().
             backend_open = getattr(fs, "open", None)
             if backend_open is not None:
-                return backend_open(path_str, mode, **kwargs)
-            return open_file(fs, path_str, mode, **kwargs)
+                handle = backend_open(path_str, mode, **kwargs)
+            else:
+                handle = open_file(fs, path_str, mode, **kwargs)
+            return _record_route(handle, fs, path_str)
         except (PermissionError, FileNotFoundError):
             if (
                 "w" not in mode
@@ -127,6 +129,15 @@ def _vfs_open(path: Any, *args: Any, **kwargs: Any) -> Any:
             _in_vfs_operation.reset(token)
 
     return _originals["open"](path, *args, **kwargs)
+
+
+def _record_route(handle: Any, fs: Any, path: str) -> Any:
+    """Note on one of monkeyfs's file objects the filesystem and path its
+    open() went through, which its ``fileno()`` descriptor names the file
+    by. The object's own backend can be one a wrapper wraps."""
+    if isinstance(handle, (VirtualFile, LazyBinaryFile)):
+        handle._route = (fs, _absolute_path(fs, path))
+    return handle
 
 
 def _mode_to_flags(mode: str) -> int:
