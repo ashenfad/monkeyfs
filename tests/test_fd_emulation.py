@@ -8,7 +8,7 @@ import threading
 
 import pytest
 
-from monkeyfs import VirtualFS, patch
+from monkeyfs import MountFS, VirtualFS, patch
 
 
 class TestRawFDOperations:
@@ -542,3 +542,19 @@ class TestWorkingDirectory:
             os.write(fd, b"data")
             os.close(fd)
         assert vfs.read("/work/x") == b"data"
+
+    def test_keeps_the_resolvers_absolute_spelling(self):
+        # MountFS routes //data/x to its base, not the mount at /data; the fd
+        # must reach the same backend open() does.
+        base = VirtualFS({})
+        base.makedirs("/data")
+        base.write("/data/x", b"base")
+        mounted = VirtualFS({})
+        mounted.write("/x", b"mount")
+        fs = MountFS(base, {"/data": mounted})
+        with patch(fs):
+            with open("//data/x", "rb") as f:
+                expected = f.read()
+            fd = os.open("//data/x", os.O_RDONLY)
+            assert os.read(fd, 100) == expected
+            os.close(fd)
