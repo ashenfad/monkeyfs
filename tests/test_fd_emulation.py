@@ -841,3 +841,118 @@ class TestAtomicSave:
             with pytest.raises(FileExistsError):
                 os.link(temp, "/work/book.bin")
         assert vfs.read("/work/book.bin") == b"someone else's"
+
+
+@pytest.mark.skipif(not hasattr(os, "fchmod"), reason="no os.fchmod")
+class TestRealDescriptors:
+    """Metadata changes through a real fd the patch layer handed out answer
+    to the filesystem it was opened through, not straight to the kernel."""
+
+    @pytest.fixture
+    def safe_file(self, tmp_path, monkeypatch):
+        from monkeyfs.patching import core
+
+        safe = tmp_path / "site"
+        safe.mkdir()
+        target = safe / "mod.py"
+        target.write_text("x = 1\n")
+        target.chmod(0o644)
+        monkeypatch.setattr(core, "_SAFE_SYSTEM_PATHS", [str(safe.resolve())])
+        return target
+
+    @staticmethod
+    def _mode(path):
+        return os.stat(path).st_mode & 0o777
+
+    def test_safe_path_from_open_is_refused(self, safe_file):
+        with patch(VirtualFS({})):
+            with open(safe_file, "rb") as f:
+                with pytest.raises(OSError) as excinfo:
+                    os.fchmod(f.fileno(), 0o666)
+                assert excinfo.value.errno == errno.EROFS
+        assert self._mode(safe_file) == 0o644
+
+    def test_safe_path_from_os_open_is_refused(self, safe_file):
+        with patch(VirtualFS({})):
+            fd = os.open(safe_file, os.O_RDONLY)
+            try:
+                with pytest.raises(OSError) as excinfo:
+                    os.fchmod(fd, 0o666)
+                assert excinfo.value.errno == errno.EROFS
+                if hasattr(os, "fchown"):
+                    with pytest.raises(OSError) as excinfo:
+                        os.fchown(fd, -1, -1)
+                    assert excinfo.value.errno == errno.EROFS
+            finally:
+                os.close(fd)
+        assert self._mode(safe_file) == 0o644
+
+    def test_read_only_wrapper_over_real_files_is_refused(self, tmp_path):
+        from monkeyfs import IsolatedFS, ReadOnlyFS
+
+        (tmp_path / "x").write_text("data")
+        (tmp_path / "x").chmod(0o644)
+        for fs, path in (
+            (ReadOnlyFS(IsolatedFS(str(tmp_path))), "/x"),
+            (
+                MountFS(VirtualFS({}), {"/ro": ReadOnlyFS(IsolatedFS(str(tmp_path)))}),
+                "/ro/x",
+            ),
+        ):
+            with patch(fs):
+                with open(path, "rb") as f:
+                    with pytest.raises(PermissionError):
+                        os.fchmod(f.fileno(), 0o666)
+        assert self._mode(tmp_path / "x") == 0o644
+
+    def test_writable_real_files_still_change(self, tmp_path):
+        from monkeyfs import IsolatedFS
+
+        (tmp_path / "x").write_text("data")
+        (tmp_path / "x").chmod(0o644)
+        with patch(IsolatedFS(str(tmp_path))):
+            with open("/x", "rb") as f:
+                os.fchmod(f.fileno(), 0o600)
+        assert self._mode(tmp_path / "x") == 0o600
+
+    def test_a_reused_number_is_not_governed(self, safe_file, tmp_path):
+        # The safe file's handle is closed by its file object, not os.close,
+        # so its record outlives it; the next file to get the number must not
+        # inherit the refusal.
+        other = tmp_path / "other"
+        other.write_text("y")
+        other.chmod(0o644)
+        with patch(VirtualFS({})):
+            f = open(safe_file, "rb")
+            fd = f.fileno()
+            f.close()
+        reused = os.open(other, os.O_RDONLY)
+        try:
+            if reused != fd:
+                pytest.skip("the OS did not reuse the descriptor number")
+            with patch(VirtualFS({})):
+                os.fchmod(reused, 0o600)
+        finally:
+            os.close(reused)
+        assert self._mode(other) == 0o600
+
+    def test_outside_patch_the_os_answers(self, safe_file):
+        with patch(VirtualFS({})):
+            f = open(safe_file, "rb")
+        try:
+            os.fchmod(f.fileno(), 0o600)
+        finally:
+            f.close()
+        assert self._mode(safe_file) == 0o600
+
+    def test_a_descriptor_from_before_patch_is_untouched(self, tmp_path):
+        host = tmp_path / "host"
+        host.write_text("z")
+        host.chmod(0o644)
+        fd = os.open(host, os.O_RDONLY)
+        try:
+            with patch(VirtualFS({})):
+                os.fchmod(fd, 0o600)
+        finally:
+            os.close(fd)
+        assert self._mode(host) == 0o600

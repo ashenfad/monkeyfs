@@ -123,7 +123,9 @@ def _vfs_open(path: Any, *args: Any, **kwargs: Any) -> Any:
                 and "x" not in mode
                 and _is_safe_system_path(path_str)
             ):
-                return _originals["open"](path, *args, **kwargs)
+                return _record_real_handle(
+                    _originals["open"](path, *args, **kwargs), None, path_str
+                )
             raise
         finally:
             _in_vfs_operation.reset(token)
@@ -137,6 +139,23 @@ def _record_route(handle: Any, fs: Any, path: str) -> Any:
     by. The object's own backend can be one a wrapper wraps."""
     if isinstance(handle, (VirtualFile, LazyBinaryFile)):
         handle._route = (fs, _absolute_path(fs, path))
+        return handle
+    return _record_real_handle(handle, fs, _absolute_path(fs, path))
+
+
+def _record_real_handle(handle: Any, fs: Any, path: str) -> Any:
+    """Note the real descriptor behind a file object open() returns, if
+    it has one, so metadata changes through it answer to ``fs`` (see
+    ``RealFD``)."""
+    try:
+        fd = handle.fileno()
+    except (AttributeError, OSError, ValueError):
+        return handle
+    if isinstance(fd, int) and not _fd_table.is_virtual(fd):
+        try:
+            _fd_table.record_real(fd, fs, path)
+        except OSError:
+            pass
     return handle
 
 
@@ -1174,7 +1193,9 @@ def _safe_path_open(path_str: str, flags: int, mode: int) -> int:
             "filesystem is active",
             path_str,
         )
-    return _originals["os_open"](path_str, flags, mode)
+    fd = _originals["os_open"](path_str, flags, mode)
+    _fd_table.record_real(fd, None, path_str)
+    return fd
 
 
 def _vfs_os_open(
@@ -1243,6 +1264,7 @@ def _vfs_os_close(fd: int) -> None:
     if _fd_table.is_virtual(fd):
         _fd_table.close(fd)
         return
+    _fd_table.forget_real(fd)
     _originals["os_close"](fd)
 
 
@@ -1325,10 +1347,50 @@ def _vfs_os_fdatasync(fd: Any) -> None:
     _originals["os_fdatasync"](fd)
 
 
-def _vfs_os_fchmod(fd: int, mode: int) -> None:
-    """VFS-aware os.fchmod() replacement: os.chmod() on the descriptor's
-    file."""
+def _fd_target(fd: int, call: str) -> tuple[Any, str] | None:
+    """The filesystem and path a metadata change through ``fd`` answers
+    to, or None to leave the call to the OS.
+
+    A virtual descriptor names its file on the filesystem it was opened
+    through. So does a real one the patch layer handed out while a
+    filesystem is active (see ``RealFD``), except that one from a safe
+    system path is refused: that passthrough is for reading. Any other
+    real descriptor -- opened before ``patch()``, or by trusted backend
+    code -- reaches the OS as it always did.
+    """
     entry = _fd_table.entry(fd)
     if entry is not None:
-        return _require(entry.fs, "chmod")(entry.path, mode)
+        return entry.fs, entry.path
+    if current_fs.get() is None or _in_vfs_operation.get():
+        return None
+    real = _fd_table.real(fd)
+    if real is None:
+        return None
+    if real.fs is None:
+        raise OSError(
+            errno.EROFS,
+            f"os.{call}() on a system file opened for reading while a "
+            "monkeyfs filesystem is active",
+            real.path,
+        )
+    return real.fs, real.path
+
+
+def _vfs_os_fchmod(fd: int, mode: int) -> None:
+    """VFS-aware os.fchmod() replacement: os.chmod() on the descriptor's
+    file (see ``_fd_target``)."""
+    target = _fd_target(fd, "fchmod")
+    if target is not None:
+        fs, path = target
+        return _require(fs, "chmod")(path, mode)
     return _originals["os_fchmod"](fd, mode)
+
+
+def _vfs_os_fchown(fd: int, uid: int, gid: int) -> None:
+    """VFS-aware os.fchown() replacement: os.chown() on the descriptor's
+    file (see ``_fd_target``)."""
+    target = _fd_target(fd, "fchown")
+    if target is not None:
+        fs, path = target
+        return _require(fs, "chown")(path, uid, gid)
+    return _originals["os_fchown"](fd, uid, gid)
