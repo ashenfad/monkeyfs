@@ -64,6 +64,9 @@ _originals: dict[str, Any] = {
     "os_close": os.close,
     "os_fstat": os.fstat,
     "os_lseek": os.lseek,
+    "os_fsync": os.fsync,
+    **({"os_fdatasync": os.fdatasync} if hasattr(os, "fdatasync") else {}),
+    **({"os_fchmod": os.fchmod} if hasattr(os, "fchmod") else {}),
 }
 
 # Store extended-attribute originals (Linux only).

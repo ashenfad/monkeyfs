@@ -12,6 +12,7 @@ import io
 import os
 import posixpath
 import threading
+import weakref
 from dataclasses import dataclass
 from typing import Any
 
@@ -57,6 +58,24 @@ class VirtualFD:
     closed: bool = False
 
 
+@dataclass
+class HandleFD:
+    """The descriptor ``fileno()`` gives for a file object monkeyfs built.
+
+    It names the object's file and holds the object weakly, so an
+    unclosed file is still collected and its finalizer still saves it.
+    ``os.fsync``, ``os.fdatasync``, ``os.fstat``, ``os.fchmod`` and
+    ``os.close`` take it. ``os.read``, ``os.write``, ``os.lseek`` and
+    ``os.fdopen`` don't, and get ``EBADF``: each would need a second
+    cursor over the object's buffer. ``os.close`` releases the number
+    and leaves the object open.
+    """
+
+    path: str
+    fs: Any
+    handle: weakref.ReferenceType[Any]
+
+
 class VirtualFDTable:
     """Thread-safe virtual file descriptor table.
 
@@ -69,6 +88,7 @@ class VirtualFDTable:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._table: dict[int, VirtualFD] = {}
+        self._handles: dict[int, HandleFD] = {}
         self._next_fd = self._BASE_FD
 
     def allocate(self, path: str, fs: Any, flags: int, file_mode: int) -> int:
@@ -140,13 +160,57 @@ class VirtualFDTable:
 
         return fd
 
+    def allocate_handle(self, handle: Any, fs: Any, path: str) -> int:
+        """Allocate the descriptor a file object's ``fileno()`` returns."""
+        entry = HandleFD(_absolute_path(fs, path), fs, weakref.ref(handle))
+        with self._lock:
+            fd = self._next_fd
+            self._next_fd += 1
+            self._handles[fd] = entry
+        return fd
+
     def get(self, fd: int) -> VirtualFD | None:
         """Look up a virtual fd. Returns None if not in the table."""
         return self._table.get(fd)
 
+    def get_handle(self, fd: int) -> HandleFD | None:
+        """Look up a file object's descriptor. Returns None if not one."""
+        return self._handles.get(fd)
+
+    def entry(self, fd: int) -> VirtualFD | HandleFD | None:
+        """Either kind of descriptor, for the calls that need only its path."""
+        return self._table.get(fd) or self._handles.get(fd)
+
     def is_virtual(self, fd: int) -> bool:
         """Check if fd is in the virtual table."""
-        return fd in self._table
+        return fd in self._table or fd in self._handles
+
+    def release_handle(self, fd: int) -> None:
+        """Drop a file object's descriptor; a no-op if it is already gone."""
+        with self._lock:
+            self._handles.pop(fd, None)
+
+    def sync(self, fd: int) -> None:
+        """Persist what a descriptor has written, keeping it open.
+
+        A descriptor from ``os.open`` writes its buffer to the filesystem,
+        as ``close`` would. One from ``fileno()`` flushes its file object
+        and has it save its buffer. A read-only descriptor has nothing to
+        save.
+        """
+        vfd = self._table.get(fd)
+        if vfd is not None:
+            if vfd.writable and not vfd.closed:
+                _write_back(vfd)
+            return
+        entry = self._handles.get(fd)
+        handle = entry.handle() if entry is not None else None
+        if handle is None:
+            raise OSError(errno.EBADF, "Bad file descriptor")
+        handle.flush()
+        sync = getattr(handle, "_sync", None)
+        if sync is not None:
+            sync()
 
     def close(self, fd: int) -> None:
         """Close and deallocate a virtual fd.
@@ -155,6 +219,10 @@ class VirtualFDTable:
         """
         with self._lock:
             vfd = self._table.pop(fd, None)
+            handle = self._handles.pop(fd, None)
+
+        if handle is not None:
+            return
 
         if vfd is None:
             raise OSError(errno.EBADF, "Bad file descriptor")
@@ -165,14 +233,18 @@ class VirtualFDTable:
         vfd.closed = True
 
         if vfd.writable:
-            content = vfd.buffer.getvalue()
-            from .core import _in_vfs_operation
+            _write_back(vfd)
 
-            token = _in_vfs_operation.set(True)
-            try:
-                vfd.fs.write(vfd.path, content)
-            finally:
-                _in_vfs_operation.reset(token)
+
+def _write_back(vfd: VirtualFD) -> None:
+    """Write a descriptor's buffer to its file."""
+    from .core import _in_vfs_operation
+
+    token = _in_vfs_operation.set(True)
+    try:
+        vfd.fs.write(vfd.path, vfd.buffer.getvalue())
+    finally:
+        _in_vfs_operation.reset(token)
 
 
 class VirtualFDRawIO(io.RawIOBase):
