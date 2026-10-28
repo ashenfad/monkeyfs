@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **`os.open` names the right file from a working directory other than `/`** (ashenfad/nontainer#292). The fd table kept `VirtualFS`'s slashless key form of the path and resolved it against the working directory again, so from `/work` a file created as `/work/x` landed at `/work/work/x`, an existing one was not found, and `tempfile` found no usable temporary directory.
+
 ## [0.2.8] - 2026-10-16
 
 ### Fixed

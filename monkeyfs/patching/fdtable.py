@@ -10,9 +10,32 @@ from __future__ import annotations
 import errno
 import io
 import os
+import posixpath
 import threading
 from dataclasses import dataclass
 from typing import Any
+
+
+def _absolute_path(fs: Any, path: str) -> str:
+    """``path`` as an absolute path on ``fs``, resolved once.
+
+    The fd keeps this path and passes it back to the filesystem on every
+    later read, write and stat, so it must name the same file from any
+    working directory. ``resolve_path`` may answer in a key form without
+    the leading slash (``VirtualFS`` does); passed on as it is, the
+    filesystem reads it as relative and resolves it a second time, so
+    from ``/work`` a file opened as ``/work/x`` would land at
+    ``/work/work/x``. A backend without ``resolve_path`` has ``getcwd``,
+    which a relative path is joined onto.
+    """
+    resolve = getattr(fs, "resolve_path", None)
+    if resolve is not None:
+        resolved = resolve(path)
+    elif path.startswith("/"):
+        resolved = path
+    else:
+        resolved = posixpath.join(fs.getcwd(), path)
+    return "/" + posixpath.normpath(resolved).lstrip("/")
 
 
 @dataclass
@@ -53,11 +76,7 @@ class VirtualFDTable:
         readable = access in (os.O_RDONLY, os.O_RDWR)
         writable = access in (os.O_WRONLY, os.O_RDWR)
 
-        # Resolve path
-        if hasattr(fs, "resolve_path"):
-            resolved = fs.resolve_path(path)
-        else:
-            resolved = path
+        resolved = _absolute_path(fs, path)
 
         file_exists = fs.exists(resolved)
 
