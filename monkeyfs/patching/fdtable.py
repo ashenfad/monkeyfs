@@ -27,6 +27,11 @@ def _absolute_path(fs: Any, path: str) -> str:
     from ``/work`` a file opened as ``/work/x`` would land at
     ``/work/work/x``. A backend without ``resolve_path`` has ``getcwd``,
     which a relative path is joined onto.
+
+    An answer that is already absolute is kept exactly as it is: the
+    filesystem chose that spelling, and ``MountFS`` routes ``//data/x``
+    to its base rather than to a mount at ``/data``, so collapsing the
+    slashes would send the fd to a different backend than ``open()``.
     """
     resolve = getattr(fs, "resolve_path", None)
     if resolve is not None:
@@ -35,7 +40,7 @@ def _absolute_path(fs: Any, path: str) -> str:
         resolved = path
     else:
         resolved = posixpath.join(fs.getcwd(), path)
-    return "/" + posixpath.normpath(resolved).lstrip("/")
+    return resolved if resolved.startswith("/") else "/" + resolved
 
 
 @dataclass
