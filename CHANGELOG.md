@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`MountFS(base, mounts, state=...)` keeps its working directory in a mapping** (ashenfad/nontainer#310). It is stored under `MountFS.CWD_KEY`, which is `VirtualFS`'s own key, and read on every use. Give the composition its base `VirtualFS`'s state and the two share one working directory, which persists wherever that state does, a versioned store's commits included. The stored path is the composition's own, so it can lie inside a mount. Without `state`, the working directory stays in memory, as before.
+
+### Fixed
+- **`MountFS` hands the base filesystem absolute paths** (ashenfad/nontainer#310). It handed it the path with the leading slash stripped, which a `VirtualFS` resolves against its own working directory. A base whose working directory was anywhere but `/` therefore read and wrote the wrong paths: from `/app`, `fs.read("/readme.txt")` looked for `/app/readme.txt`, and `fs.chdir("/app")` failed. A user of `MountFS` had to keep the base at `/`, so a composition over a persisted `VirtualFS` could never persist its working directory.
+
 ## [0.2.9] - 2026-10-27
 
 ### Added

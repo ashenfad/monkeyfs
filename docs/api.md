@@ -130,7 +130,7 @@ ro.write("x.txt", b"hi")  # PermissionError: Read-only filesystem
 
 **Private and dunder attributes are never forwarded**, so `copy`, `pickle` and `inspect` get the `AttributeError` they probe for. The wrapped filesystem stays reachable as `ro._fs` for callers that deliberately want past the wrapper.
 
-### `MountFS(base, mounts=None)`
+### `MountFS(base, mounts=None, *, state=None)`
 
 Routes filesystem operations to different backing filesystems based on path prefix. `base` handles all paths not covered by a mount. `mounts` is a dict mapping absolute path prefixes to filesystems.
 
@@ -149,7 +149,17 @@ fs.write("/chapters/x.md", b"no")  # PermissionError (read-only mount)
 
 **Dynamic mounts:** `fs.mount("/data", some_fs)` and `fs.unmount("/data")`.
 
-**CWD:** MountFS maintains its own working directory (default `"/"`). Relative paths are resolved against it before routing.
+**CWD:** MountFS maintains its own working directory (default `"/"`). Relative paths are resolved against it before routing, and the filesystem that owns a path is handed it absolute, so a backend's own working directory never changes what a path names.
+
+**`state`** keeps that working directory in a mapping instead of in memory, under `MountFS.CWD_KEY`, and reads it on every use. The key is the one `VirtualFS` keeps its own under (`"__vfs_cwd__"`), so a composition handed its base `VirtualFS`'s state shares one working directory with it, persisted wherever that state is, and a change to the mapping from outside moves it. The path stored is the composition's, so it may lie inside a mount, a directory the base itself does not have. `chdir()` writes it only after the directory checks out.
+
+```python
+state = {}
+base = VirtualFS(state)
+fs = MountFS(base, {"/chapters": ReadOnlyFS(chapters)}, state=state)
+fs.chdir("/chapters")
+state["__vfs_cwd__"]               # "/chapters"
+```
 
 **Directory listing:** `list()` at a directory containing mount points merges entries from the base filesystem with mount-point names. Recursive listing includes contents of mounted filesystems.
 

@@ -207,6 +207,102 @@ class TestMountFSCwd:
         assert fs.getcwd() == "/deep"
 
 
+class TestMountFSBaseWorkingDirectory:
+    """The base is handed absolute paths, so its own working directory
+    never changes what a path through the composition names."""
+
+    def _moved_base(self):
+        base = _make_base()
+        base.chdir("/app")
+        return base
+
+    def test_absolute_and_relative_paths_name_the_same_files(self):
+        fs = MountFS(self._moved_base(), {"/chapters": _make_mount()})
+        assert fs.read("/readme.txt") == b"hello"
+        assert fs.read("readme.txt") == b"hello"
+        assert sorted(fs.list("/app")) == ["main.py", "utils.py"]
+        assert fs.isdir("/app") and not fs.exists("/app/app")
+
+    def test_chdir_and_write_land_where_they_say(self):
+        base = self._moved_base()
+        fs = MountFS(base, {"/chapters": _make_mount()})
+        fs.chdir("/app")
+        fs.write("new.py", b"x")
+        assert base.read("/app/new.py") == b"x"
+        assert not base.exists("/app/app/new.py")
+        fs.chdir("/")
+        assert fs.read("readme.txt") == b"hello"
+
+
+class TestMountFSCwdState:
+    """``state`` keeps the working directory in a mapping, read live,
+    under the key VirtualFS keeps its own under."""
+
+    def test_the_working_directory_is_the_states(self):
+        state: dict = {}
+        fs = MountFS(_make_base(), state=state)
+        assert fs.getcwd() == "/"
+        fs.chdir("/app")
+        assert state[MountFS.CWD_KEY] == "/app"
+        assert fs.read("main.py") == b"print('hi')"
+
+    def test_it_is_read_live(self):
+        state: dict = {}
+        fs = MountFS(_make_base(), state=state)
+        state[MountFS.CWD_KEY] = "/app"
+        assert fs.getcwd() == "/app"
+        assert fs.read("utils.py") == b"def add(a,b): return a+b"
+        del state[MountFS.CWD_KEY]
+        assert fs.getcwd() == "/"
+
+    def test_a_base_virtualfs_shares_it(self):
+        state: dict = {}
+        base = VirtualFS(state)
+        base.write("/app/main.py", b"print('hi')")
+        fs = MountFS(base, {"/chapters": _make_mount()}, state=state)
+        fs.chdir("/app")
+        assert MountFS.CWD_KEY == VirtualFS.CWD_KEY
+        assert base.getcwd() == "/app"
+        assert fs.read("main.py") == base.read("main.py")
+        base.chdir("/")
+        assert fs.getcwd() == "/"
+
+    def test_a_directory_inside_a_mount_is_kept_by_its_path(self):
+        state: dict = {}
+        fs = MountFS(_make_base(), {"/chapters": _make_mount()}, state=state)
+        fs.chdir("/chapters/events")
+        assert state[MountFS.CWD_KEY] == "/chapters/events"
+        assert fs.read("001-prompt.md") == b"user: explore"
+        assert fs.read("/readme.txt") == b"hello"
+        fs.chdir("/chapters")
+        assert state[MountFS.CWD_KEY] == "/chapters"
+
+    def test_a_new_composition_on_the_same_state_resumes_there(self):
+        state: dict = {}
+        mount = _make_mount()
+        MountFS(_make_base(), {"/chapters": mount}, state=state).chdir("/chapters")
+        again = MountFS(_make_base(), {"/chapters": mount}, state=state)
+        assert again.getcwd() == "/chapters"
+        assert again.read("summary.md") == b"# Data exploration"
+
+    def test_a_refused_chdir_writes_nothing(self):
+        state: dict = {}
+        fs = MountFS(_make_base(), state=state)
+        with pytest.raises(FileNotFoundError):
+            fs.chdir("/nonexistent")
+        assert MountFS.CWD_KEY not in state
+
+    def test_under_patch(self):
+        state: dict = {}
+        fs = MountFS(_make_base(), {"/chapters": _make_mount()}, state=state)
+        with patch(fs):
+            os.chdir("/chapters")
+            assert os.getcwd() == "/chapters"
+            with open("summary.md", "rb") as f:
+                assert f.read() == b"# Data exploration"
+        assert state[MountFS.CWD_KEY] == "/chapters"
+
+
 class TestMountFSStat:
     """stat() should handle base files, mount files, and mount points."""
 
