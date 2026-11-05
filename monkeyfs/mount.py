@@ -11,7 +11,7 @@ import errno
 import fnmatch
 import os
 import posixpath
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, MutableMapping
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
@@ -19,6 +19,7 @@ from typing import Any
 from ._globbing import glob_from_list as _glob_from_list
 from ._globbing import segments_match as _segments_match
 from .base import FileInfo, FileMetadata
+from .virtual import VirtualFS, _HostState
 from .virtualfile import open_file
 
 
@@ -186,13 +187,37 @@ class MountFS:
         >>> fs.read("/chapters/summary.md")
         b'# Chapter 1'
         >>> fs.write("/app/main.py", b"print('hi')")  # goes to base
+
+    The working directory is the composition's own. Every path is
+    resolved against it here, before routing, and the filesystem that
+    owns the path is handed the result absolute, so a backend's own
+    working directory never changes what a path names.
+
+    By default the working directory lives in memory and starts at
+    ``/``. Give ``state`` to keep it in a mapping instead, under
+    :attr:`CWD_KEY`, read on every use: hand the composition its base
+    ``VirtualFS``'s state and the two share one working directory,
+    persisted wherever that state is. The path stored is the one the
+    composition names, so it may lie inside a mount, where the base has
+    no such directory.
     """
 
-    def __init__(self, base: Any, mounts: dict[str, Any] | None = None):
+    #: The key ``state`` keeps the working directory under: the one
+    #: ``VirtualFS`` keeps its own under.
+    CWD_KEY = VirtualFS.CWD_KEY
+
+    def __init__(
+        self,
+        base: Any,
+        mounts: dict[str, Any] | None = None,
+        *,
+        state: MutableMapping[str, Any] | None = None,
+    ):
         self._base = base
         self._mounts: dict[str, Any] = {}
         self._sorted_prefixes: list[str] = []
         self._cwd = "/"
+        self._state = None if state is None else _HostState(state)
 
         if mounts:
             for prefix, fs in mounts.items():
@@ -230,9 +255,10 @@ class MountFS:
         """Resolve relative path against CWD, return normalized absolute."""
         if path.startswith("/"):
             return self._normalize(path)
-        if self._cwd == "/":
+        cwd = self.getcwd()
+        if cwd == "/":
             return self._normalize("/" + path)
-        return self._normalize(self._cwd + "/" + path)
+        return self._normalize(cwd + "/" + path)
 
     def _owner_of(self, abs_path: str) -> str | None:
         """The mount prefix an absolute path routes to, or None for the base.
@@ -263,10 +289,10 @@ class MountFS:
             inner = abs_path[len(prefix) :] or "/"
             return self._mounts[prefix], inner
 
-        # Strip leading slash for base FS — VirtualFS uses paths like
-        # "file.txt" not "/file.txt". But keep "/" as "/".
-        base_path = abs_path.lstrip("/") or "/"
-        return self._base, base_path
+        # Absolute, so the base's own working directory can't move it:
+        # a VirtualFS resolves a relative path against the cwd in its
+        # state, which may be this composition's (see ``state``).
+        return self._base, abs_path
 
     def _is_implied_dir(self, abs_path: str) -> bool:
         """Whether abs_path is a directory on the way to a mount prefix.
@@ -405,18 +431,21 @@ class MountFS:
     # -- CWD --
 
     def getcwd(self) -> str:
-        return self._cwd
+        if self._state is None:
+            return self._cwd
+        return self._state.get(self.CWD_KEY) or "/"
 
     def chdir(self, path: str) -> None:
         abs_path = self._to_absolute(path)
         # Mount points are valid directories
-        if self._is_mount_point(abs_path):
+        if not self._is_mount_point(abs_path):
+            fs, inner = self._resolve(path)
+            if not fs.isdir(inner):
+                raise FileNotFoundError(f"No such directory: '{path}'")
+        if self._state is None:
             self._cwd = abs_path
-            return
-        fs, inner = self._resolve(path)
-        if not fs.isdir(inner):
-            raise FileNotFoundError(f"No such directory: '{path}'")
-        self._cwd = abs_path
+        else:
+            self._state[self.CWD_KEY] = abs_path
 
     # -- Read operations --
 

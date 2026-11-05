@@ -28,6 +28,10 @@ class TestConformingBackends:
     def test_mounted(self):
         check_filesystem(MountFS(VirtualFS({})))
 
+    def test_mounted_sharing_its_bases_working_directory(self):
+        state: dict = {}
+        check_filesystem(MountFS(VirtualFS(state), state=state))
+
     def test_a_backend_with_no_open_of_its_own(self):
         """The synthesized open() is what the kit checks for this one."""
         check_filesystem(TermishFS())
